@@ -19,15 +19,20 @@ import extra_streamlit_components as stx
 # capturando a versao ja modificada como "original" -> recursao infinita.
 # O guard garante que o original seja capturado UMA unica vez.
 # A key fixa evita o loop de remontagem do widget de cookie.
-if not getattr(stx.CookieManager, "_dcubic_patched", False):
-    _dcubic_original_cm = stx.CookieManager
+# Pega a classe CookieManager ORIGINAL direto do submodulo em sys.modules.
+# O Streamlit Cloud pode manter o processo vivo entre commits, deixando
+# stx.CookieManager embrulhado por patches antigos (recursao). Buscar do
+# submodulo ignora qualquer reatribuicao anterior e sempre embrulha a classe
+# real. A key fixa evita o loop de remontagem do widget de cookie.
+import sys as _sys
+_cm_submod = _sys.modules.get("extra_streamlit_components.CookieManager")
+_dcubic_original_cm = getattr(_cm_submod, "CookieManager", None) or stx.CookieManager
 
-    def _patched_cookie_manager(*args, **kwargs):
-        kwargs.setdefault("key", "dcubic_cookie_manager")
-        return _dcubic_original_cm(*args, **kwargs)
+def _patched_cookie_manager(*args, **kwargs):
+    kwargs.setdefault("key", "dcubic_cookie_manager")
+    return _dcubic_original_cm(*args, **kwargs)
 
-    _patched_cookie_manager._dcubic_patched = True
-    stx.CookieManager = _patched_cookie_manager
+stx.CookieManager = _patched_cookie_manager
 
 import streamlit_authenticator as stauth
 
