@@ -21,10 +21,11 @@ via upload na barra lateral. Normalização de intensidade adicionada — aceita
 *Refinar:* validação com exame real; suporte a metadados de espaçamento de voxel de mais scanners.
 
 ### 2. Áreas que não são sulcos → sólidas; contornos → transparentes
-**Status: PARCIAL.**
-Há segmentação por limiar + opacidade por tecido + o novo **Modo de transparência** (Req. 3),
-que já deixa a superfície externa translúcida.
-*Falta (refino opcional):* realce específico de **bordas/contorno** vs. massa sólida (efeito de contorno).
+**Status: FEITO.**
+Segmentação por limiar + opacidade por tecido + **Modo "Contorno (casca translúcida)"** adicionado
+ao Render 3D: superfície externa (Tecido mole, i=0) com opacidade 0.07 (casca quase invisível),
+estruturas internas (Esmalte/Osso, Núcleo denso) com opacidade 1.0 (sólidas).
+Princípio 1 mantido: a opacidade é configuração visual — não altera voxels nem métricas.
 
 ### 3. Partes externas transparentes / partes internas visíveis
 **Status: FEITO.**
@@ -74,9 +75,10 @@ registramos a mudança no changelog abaixo.
 - **2026-08-25** — Requisito 3: Modo de transparência no Render 3D (externo transparente / raio-X / sólido).
 - **2026-08-25** — Requisito 7: módulo de referências de anatomia dental (FDI, raízes/canais, Vertucci) + atualização online.
 - **2026-08-25** — Relatório PDF enriquecido: seções "Volumes anatômicos" e "Referência anatômica do dente".
+- **2026-08-25** — Requisito 2: modo "Contorno (casca translúcida)" no Render 3D — superfície externa quase invisível (op. 0.07), estruturas internas sólidas (op. 1.0).
 
-> **Todos os 8 requisitos têm ao menos a base implementada.**
+> **Todos os 8 requisitos têm ao menos a base implementada. Req. 2 agora FEITO.**
 
 ## Próximos passos sugeridos (ordem)
 1. **Calibração com exame real** — validar Req. 6 (canal/plano cervical) e a segmentação; curar as referências (Req. 7).
-2. **Req. 2 (refino opcional)** — realce de bordas/contorno vs. massa sólida.
+2. Enriquecer o relatório PDF com imagem do render 3D (captura do Plotly).

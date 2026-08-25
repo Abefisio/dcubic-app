@@ -359,8 +359,8 @@ with tab_3d:
 
     _modo_transp = st.selectbox(
         "Modo de transparência",
-        ["Personalizado", "Externo transparente / interno opaco", "Raio-X (tudo translúcido)", "Sólido (tudo opaco)"],
-        help="Deixe camadas translúcidas para enxergar as áreas internas captadas pela microtomografia.",
+        ["Personalizado", "Contorno (casca translúcida)", "Externo transparente / interno opaco", "Raio-X (tudo translúcido)", "Sólido (tudo opaco)"],
+        help="Deixe camadas translúcidas para enxergar as áreas internas captadas pela microtomografia. 'Contorno' exibe a superfície externa como casca quase invisível, mantendo as estruturas internas sólidas.",
         key="op3d_modo",
     )
     op_cols = st.columns(len(render_tissue_names))
@@ -382,6 +382,9 @@ with tab_3d:
     if _modo_transp != "Personalizado":
         _N = len(render_tissue_names)
         def _preset_op(i):
+            if _modo_transp == "Contorno (casca translúcida)":
+                # superfície externa quase invisível (casca); estruturas internas sólidas
+                return 0.07 if i == 0 else 1.0
             if _modo_transp == "Raio-X (tudo translúcido)":
                 return 0.30
             if _modo_transp == "Sólido (tudo opaco)":
