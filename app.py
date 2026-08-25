@@ -13,17 +13,21 @@ import extra_streamlit_components as stx
 # renderiza um componente iframe) a cada rerun, causando um loop infinito de
 # reruns que deixa a página em branco. O cache_resource garante que o componente
 # seja instanciado apenas uma vez por ciclo de vida do servidor.
-_original_cm = stx.CookieManager
+# Patch IDEMPOTENTE do CookieManager.
+# O Streamlit re-executa o app.py a cada rerun, mas o modulo stx persiste na
+# memoria. Sem o guard abaixo, cada rerun re-empacotava o CookieManager,
+# capturando a versao ja modificada como "original" -> recursao infinita.
+# O guard garante que o original seja capturado UMA unica vez.
+# A key fixa evita o loop de remontagem do widget de cookie.
+if not getattr(stx.CookieManager, "_dcubic_patched", False):
+    _dcubic_original_cm = stx.CookieManager
 
-def _patched_cookie_manager(*args, **kwargs):
-    # Injeta uma CHAVE FIXA no CookieManager. Sem key estavel, o
-    # extra-streamlit-components 0.1.81 remonta o componente a cada rerun e
-    # dispara um loop infinito (pagina presa em "Running..."). Com key fixa o
-    # widget mantem a mesma identidade entre reruns e o loop nao ocorre.
-    kwargs.setdefault("key", "dcubic_cookie_manager")
-    return _original_cm(*args, **kwargs)
+    def _patched_cookie_manager(*args, **kwargs):
+        kwargs.setdefault("key", "dcubic_cookie_manager")
+        return _dcubic_original_cm(*args, **kwargs)
 
-stx.CookieManager = _patched_cookie_manager
+    _patched_cookie_manager._dcubic_patched = True
+    stx.CookieManager = _patched_cookie_manager
 
 import streamlit_authenticator as stauth
 
