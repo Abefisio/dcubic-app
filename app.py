@@ -121,12 +121,54 @@ st.title("DCubic Image System Platform")
 st.caption("Análise de volumes 3D micro-CT · USP/FOUSP · Pesquisa acadêmica")
 
 
-@st.cache_data
-def _load_vol():
+@st.cache_data(show_spinner=False)
+def _load_synthetic_vol():
     return load_volume(synthetic=True)
 
 
-vol_data = _load_vol()
+@st.cache_data(show_spinner="Carregando volume enviado...")
+def _load_uploaded_vol(files):
+    """files: tupla de (nome, bytes). Salva em pasta temporaria e carrega.
+
+    DICOM (.dcm) e TIFF (.tif/.tiff) sao pilhas -> passa a pasta.
+    NIfTI (.nii/.nii.gz) e arquivo unico -> passa o arquivo.
+    """
+    import os, tempfile
+    tmpdir = tempfile.mkdtemp(prefix="dcubic_up_")
+    saved = []
+    for name, data in files:
+        fp = os.path.join(tmpdir, os.path.basename(name))
+        with open(fp, "wb") as fh:
+            fh.write(data)
+        saved.append(fp)
+    nii = next((s for s in saved
+                if s.lower().endswith(".nii") or s.lower().endswith(".nii.gz")), None)
+    if nii is not None:
+        return load_volume(nii)
+    return load_volume(tmpdir)
+
+
+st.sidebar.header("Dados")
+_uploads = st.sidebar.file_uploader(
+    "Carregar micro-CT (DICOM .dcm, TIFF .tif/.tiff ou NIfTI .nii/.nii.gz). "
+    "Para DICOM/TIFF, selecione TODOS os cortes de uma vez.",
+    type=["dcm", "tif", "tiff", "nii", "gz"],
+    accept_multiple_files=True,
+)
+
+if _uploads:
+    try:
+        _files = tuple((f.name, f.getvalue()) for f in _uploads)
+        vol_data = _load_uploaded_vol(_files)
+        st.sidebar.success(f"Volume carregado: {vol_data['source']}")
+    except Exception as _e:  # noqa: BLE001
+        st.sidebar.error(f"Falha ao carregar o arquivo: {_e}")
+        st.sidebar.info("Usando o volume sintetico (phantom).")
+        vol_data = _load_synthetic_vol()
+else:
+    st.sidebar.caption("Nenhum arquivo enviado - usando o volume sintetico (phantom).")
+    vol_data = _load_synthetic_vol()
+
 volume   = vol_data["volume"]
 Z, Y, X  = volume.shape
 
