@@ -15,16 +15,15 @@ import extra_streamlit_components as stx
 # seja instanciado apenas uma vez por ciclo de vida do servidor.
 _original_cm = stx.CookieManager
 
-def _cached_cookie_manager(*args, **kwargs):
-    # Reutiliza uma unica instancia por sessao (via session_state) em vez de
-    # st.cache_resource. O Streamlit >=1.62 proibe widgets em funcoes cacheadas
-    # (CachedWidgetWarning); session_state evita isso e ainda quebra o loop
-    # infinito de reruns que deixava a pagina em branco.
-    if "_dcubic_cookie_mgr" not in st.session_state:
-        st.session_state["_dcubic_cookie_mgr"] = _original_cm(*args, **kwargs)
-    return st.session_state["_dcubic_cookie_mgr"]
+def _patched_cookie_manager(*args, **kwargs):
+    # Injeta uma CHAVE FIXA no CookieManager. Sem key estavel, o
+    # extra-streamlit-components 0.1.81 remonta o componente a cada rerun e
+    # dispara um loop infinito (pagina presa em "Running..."). Com key fixa o
+    # widget mantem a mesma identidade entre reruns e o loop nao ocorre.
+    kwargs.setdefault("key", "dcubic_cookie_manager")
+    return _original_cm(*args, **kwargs)
 
-stx.CookieManager = _cached_cookie_manager
+stx.CookieManager = _patched_cookie_manager
 
 import streamlit_authenticator as stauth
 
