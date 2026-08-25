@@ -15,9 +15,14 @@ import extra_streamlit_components as stx
 # seja instanciado apenas uma vez por ciclo de vida do servidor.
 _original_cm = stx.CookieManager
 
-@st.cache_resource
-def _cached_cookie_manager():
-    return _original_cm()
+def _cached_cookie_manager(*args, **kwargs):
+    # Reutiliza uma unica instancia por sessao (via session_state) em vez de
+    # st.cache_resource. O Streamlit >=1.62 proibe widgets em funcoes cacheadas
+    # (CachedWidgetWarning); session_state evita isso e ainda quebra o loop
+    # infinito de reruns que deixava a pagina em branco.
+    if "_dcubic_cookie_mgr" not in st.session_state:
+        st.session_state["_dcubic_cookie_mgr"] = _original_cm(*args, **kwargs)
+    return st.session_state["_dcubic_cookie_mgr"]
 
 stx.CookieManager = _cached_cookie_manager
 
