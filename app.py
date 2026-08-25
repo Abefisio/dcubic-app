@@ -48,11 +48,20 @@ if os.path.exists(_USERS_YAML):
     with open(_USERS_YAML, "r") as _f:
         _auth_config = yaml.safe_load(_f)
 else:
-    # Streamlit Cloud: credenciais injetadas via st.secrets
-    _auth_config = st.secrets.get("auth", None)
-    if _auth_config is None:
+    # Streamlit Cloud: credenciais injetadas via st.secrets (objeto imutável).
+    # Convertido para dict comum (mutável), pois streamlit-authenticator
+    # modifica credentials["usernames"] internamente.
+    def _to_plain(_o):
+        if hasattr(_o, "items"):
+            return {_k: _to_plain(_v) for _k, _v in _o.items()}
+        if isinstance(_o, list):
+            return [_to_plain(_v) for _v in _o]
+        return _o
+    _raw_auth = st.secrets.get("auth", None)
+    if _raw_auth is None:
         st.error("Configuração de autenticação não encontrada. Configure st.secrets['auth'].")
         st.stop()
+    _auth_config = _to_plain(_raw_auth)
 
 authenticator = stauth.Authenticate(
     _auth_config["credentials"],
