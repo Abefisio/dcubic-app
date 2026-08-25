@@ -1,5 +1,8 @@
 [theme]
 base = "dark"
+primaryColor = "#00c2c9"
+textColor = "#e6edf6"
+font = "sans serif"
 
 [server]
 maxUploadSize = 500

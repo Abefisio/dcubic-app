@@ -53,6 +53,47 @@ st.set_page_config(
 )
 
 # ---------------------------------------------------------------------------
+# Identidade visual DCubic (tema + molar 3D)
+# ---------------------------------------------------------------------------
+import base64 as _b64mod
+import streamlit.components.v1 as _components
+
+st.markdown(
+    "<style>@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@400;500&display=swap');"
+    "html,body,[class*='css'],.stApp,button,input,textarea,select{font-family:'Inter',sans-serif !important;}"
+    "h1,h2,h3,h4{font-family:'Inter',sans-serif !important;letter-spacing:-.02em;}.stApp a{color:#00c2c9;}</style>",
+    unsafe_allow_html=True,
+)
+
+_DC_DIR = os.path.dirname(os.path.abspath(__file__))
+_DC_ASSETS = os.path.join(_DC_DIR, "assets")
+
+def _dc_b64(_p):
+    try:
+        with open(_p, "rb") as _fh:
+            return _b64mod.b64encode(_fh.read()).decode("ascii")
+    except Exception:
+        return ""
+
+def _dc_read(_p):
+    try:
+        with open(_p, "r", encoding="utf-8") as _fh:
+            return _fh.read()
+    except Exception:
+        return ""
+
+def _dc_molar_sources():
+    _s = ""
+    _w = _dc_b64(os.path.join(_DC_ASSETS, "molar.webm"))
+    _m = _dc_b64(os.path.join(_DC_ASSETS, "molar.mp4"))
+    if _w:
+        _s += '<source src="data:video/webm;base64,' + _w + '" type="video/webm">'
+    if _m:
+        _s += '<source src="data:video/mp4;base64,' + _m + '" type="video/mp4">'
+    return _s
+
+
+# ---------------------------------------------------------------------------
 # Autenticação — credenciais via Streamlit Secrets (nunca hardcoded)
 # ---------------------------------------------------------------------------
 _USERS_YAML = os.path.join(os.path.dirname(os.path.abspath(__file__)), "auth", "users.yaml")
@@ -83,6 +124,23 @@ authenticator = stauth.Authenticate(
     _auth_config["cookie"]["expiry_days"],
 )
 
+# ---------------------------------------------------------------------------
+# Landing (tela inicial antes do login)
+# ---------------------------------------------------------------------------
+if "entered" not in st.session_state:
+    st.session_state["entered"] = False
+
+if not st.session_state["entered"] and not st.session_state.get("authentication_status"):
+    _dc_landing = _dc_read(os.path.join(_DC_ASSETS, "landing.html")).replace("__SRC__", _dc_molar_sources())
+    if _dc_landing:
+        _components.html(_dc_landing, height=560, scrolling=False)
+    _lc1, _lc2, _lc3 = st.columns([1, 1.4, 1])
+    with _lc2:
+        if st.button("🔬  Acessar o app", type="primary", use_container_width=True, key="dc_enter"):
+            st.session_state["entered"] = True
+            st.rerun()
+    st.stop()
+
 # Idle-timeout: força re-login após 30 min de inatividade
 _IDLE_MINUTES = 30
 if st.session_state.get("authentication_status"):
@@ -97,17 +155,20 @@ if st.session_state.get("authentication_status"):
     else:
         st.session_state["_last_active"] = _now
 
+_dc_login_top = st.container()
 authenticator.login(location="main")
 
 _auth_status = st.session_state.get("authentication_status")
 
 if _auth_status is not True:
+    with _dc_login_top:
+        _dc_login = _dc_read(os.path.join(_DC_ASSETS, "login.html")).replace("__SRC__", _dc_molar_sources())
+        if _dc_login:
+            _components.html(_dc_login, height=180, scrolling=False)
     if st.session_state.get("_idle_logout"):
         st.warning("Sessão encerrada por inatividade (30 min). Faça login novamente.")
     elif _auth_status is False:
         st.error("Usuário ou senha incorretos.")
-    else:
-        st.info("Faça login para acessar o DCubic Image System Platform.")
     st.stop()
 
 # Login bem-sucedido — exibe o app abaixo

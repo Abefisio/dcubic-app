@@ -1,0 +1,40 @@
+<!doctype html><html lang="pt-BR"><head><meta charset="utf-8">
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;700;800&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+ *{margin:0;padding:0;box-sizing:border-box}
+ body{font-family:'Inter',sans-serif;background:#00021f;color:#c3d1e6;overflow:hidden}
+ .wrap{position:relative;min-height:540px;display:grid;grid-template-columns:1.05fr .95fr;gap:44px;align-items:center;padding:0 46px}
+ .grid{position:absolute;inset:0;background-image:linear-gradient(rgba(0,131,143,.10) 1px,transparent 1px),linear-gradient(90deg,rgba(0,131,143,.10) 1px,transparent 1px);background-size:40px 40px;-webkit-mask-image:radial-gradient(ellipse 80% 70% at 50% 40%,#000 30%,transparent 80%);mask-image:radial-gradient(ellipse 80% 70% at 50% 40%,#000 30%,transparent 80%)}
+ .glow{position:absolute;inset:0;background:radial-gradient(ellipse 50% 50% at 74% 42%,rgba(0,194,201,.16),transparent 70%),radial-gradient(ellipse 40% 40% at 18% 82%,rgba(0,255,181,.07),transparent 70%)}
+ .col{position:relative;z-index:1}
+ .ey{font-family:'IBM Plex Mono',monospace;font-size:12px;letter-spacing:2.5px;color:#00c2c9;margin-bottom:18px;display:flex;align-items:center;gap:10px}
+ .live{width:7px;height:7px;border-radius:50%;background:#00ffb5;box-shadow:0 0 10px #00ffb5;animation:blink 2s infinite}
+ @keyframes blink{0%,100%{opacity:1}50%{opacity:.3}}
+ h1{font-size:46px;font-weight:800;color:#fff;line-height:1.06;letter-spacing:-1.2px;margin-bottom:18px}
+ h1 .a{color:#00c2c9}
+ p.d{font-size:17px;color:#9fb2cc;max-width:470px;margin-bottom:22px;line-height:1.6}
+ .badges{display:flex;gap:8px;flex-wrap:wrap}
+ .b{font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:1px;padding:5px 11px;border-radius:20px;border:1px solid #1d3a63;color:#8fb3d6}
+ .b.t{border-color:#0c5563;color:#00e0d0;background:rgba(0,194,201,.06)}
+ .vp{position:relative;border:1px solid #1c2c56;border-radius:14px;background:linear-gradient(160deg,#030826,#01030f);overflow:hidden;box-shadow:0 24px 60px rgba(0,0,0,.5)}
+ .vptop{display:flex;justify-content:space-between;padding:9px 13px;border-bottom:1px solid #12203f;font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:1px;color:#7f95b8}
+ .vptop .tg{color:#00e0d0}
+ video{width:100%;aspect-ratio:1/1;object-fit:cover;display:block;-webkit-mask-image:radial-gradient(circle at 50% 47%,#000 58%,transparent 90%);mask-image:radial-gradient(circle at 50% 47%,#000 58%,transparent 90%)}
+ @media(max-width:760px){.wrap{grid-template-columns:1fr;padding:24px;gap:24px}h1{font-size:32px}}
+</style></head>
+<body>
+ <div class="wrap">
+  <div class="grid"></div><div class="glow"></div>
+  <div class="col">
+   <div class="ey"><span class="live"></span> USP / FOUSP · MICRO-CT · 3D IMAGING</div>
+   <h1>Micro-CT dental,<br>além do <span class="a">plano 2D</span></h1>
+   <p class="d">Visualização triplanar, segmentação multi-tecido, render 3D interativo e métricas morfométricas em mm³.</p>
+   <div class="badges"><span class="b t">Pesquisa acadêmica</span><span class="b">USP/FOUSP</span><span class="b">Open-source</span></div>
+  </div>
+  <div class="col">
+   <div class="vp"><div class="vptop"><span class="tg">MODELO 3D · MOLAR</span><span>RECONSTRUÇÃO MICRO-CT</span></div>
+    <video autoplay muted loop playsinline>__SRC__</video></div>
+  </div>
+ </div>
+</body></html>
