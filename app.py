@@ -45,6 +45,8 @@ from modules.metrics import (
     mesh_to_stl_bytes, mesh_to_obj_bytes,
 )
 from modules.report import generate_pdf
+from modules.anatomy import compute_anatomy
+from modules import references
 
 st.set_page_config(
     page_title="DCubic Image System Platform",
@@ -260,7 +262,26 @@ with c3:
 tissue_names        = list(DEFAULT_THRESHOLDS.keys())
 render_tissue_names = [n for n in tissue_names if n != "Fundo"]
 
-tab_2d, tab_seg, tab_3d, tab_met = st.tabs(["📐 Triplanar", "🔍 Segmentação", "🫙 Render 3D", "📊 Métricas & Export"])
+# ---------------------------------------------------------------------------
+# Requisito 5 — paleta de cores selecionável por camada (barra lateral)
+# As cores escolhidas substituem as fixas em Segmentação, Render 3D e Métricas.
+# ---------------------------------------------------------------------------
+def _dc_hex(_rgb):
+    return "#%02x%02x%02x" % (int(_rgb[0]), int(_rgb[1]), int(_rgb[2]))
+
+def _dc_rgb(_h):
+    _h = _h.lstrip("#")
+    return (int(_h[0:2], 16), int(_h[2:4], 16), int(_h[4:6], 16))
+
+st.sidebar.header("Cores das camadas")
+_PALETTE = {}
+for _tn in tissue_names:
+    _PALETTE[_tn] = _dc_rgb(
+        st.sidebar.color_picker(_tn, _dc_hex(TISSUE_PALETTE[_tn]), key=f"dc_col_{_tn}")
+    )
+TISSUE_PALETTE = _PALETTE
+
+tab_2d, tab_seg, tab_3d, tab_anat, tab_met = st.tabs(["📐 Triplanar", "🔍 Segmentação", "🫙 Render 3D", "🦷 Anatomia", "📊 Métricas & Export"])
 
 # ---------------------------------------------------------------------------
 # Aba 1 — Visualização 2D triplanar
@@ -336,6 +357,12 @@ with tab_3d:
         "Rotacione e amplie diretamente no gráfico."
     )
 
+    _modo_transp = st.selectbox(
+        "Modo de transparência",
+        ["Personalizado", "Externo transparente / interno opaco", "Raio-X (tudo translúcido)", "Sólido (tudo opaco)"],
+        help="Deixe camadas translúcidas para enxergar as áreas internas captadas pela microtomografia.",
+        key="op3d_modo",
+    )
     op_cols = st.columns(len(render_tissue_names))
     opacities: dict[str, float] = {}
     for i, name in enumerate(render_tissue_names):
@@ -351,6 +378,18 @@ with tab_3d:
                 step=0.05,
                 key=f"op3d_{name}",
             )
+
+    if _modo_transp != "Personalizado":
+        _N = len(render_tissue_names)
+        def _preset_op(i):
+            if _modo_transp == "Raio-X (tudo translúcido)":
+                return 0.30
+            if _modo_transp == "Sólido (tudo opaco)":
+                return 1.0
+            # externo transparente -> interno opaco: opacidade cresce com a profundidade/densidade
+            return round(0.12 + 0.88 * (i / (_N - 1) if _N > 1 else 1.0), 2)
+        opacities = {n: _preset_op(i) for i, n in enumerate(render_tissue_names)}
+        st.caption("Opacidades definidas pelo modo selecionado — os sliders acima ficam como referência.")
 
     spacing_z = vol_data["spacing"][0]
     max_z_mm  = float(Z * spacing_z)
@@ -384,6 +423,69 @@ with tab_3d:
         "Princípio 1: a malha 3D é gerada a partir dos masks de voxels brutos. "
         "Métricas quantitativas disponíveis na aba 📊 Métricas & Export."
     )
+
+# ---------------------------------------------------------------------------
+# Aba — Anatomia (Requisito 6): externo / cavidade / canal / coroa / raiz
+# ---------------------------------------------------------------------------
+with tab_anat:
+    st.markdown(
+        "**Volumes anatômicos** — morfologia 3D sobre os voxels brutos (Princípio 1): "
+        "envelope externo, cavidade interna (câmara + canais) e canal radicular; além de coroa e raiz."
+    )
+    _ac1, _ac2 = st.columns(2)
+    with _ac1:
+        _auto_cerv = st.checkbox("Plano cervical automático (pescoço)", value=True, key="an_autocerv")
+    with _ac2:
+        _crown_hi = st.checkbox("Coroa no topo do eixo (Z alto)", value=True, key="an_crownhi")
+    _cerv_frac = None
+    if not _auto_cerv:
+        _cerv_frac = st.slider(
+            "Plano cervical (fração do eixo do dente · 0 = ápice, 1 = topo)",
+            0.0, 1.0, 0.55, 0.01, key="an_cervfrac",
+        )
+    with st.spinner("Calculando volumes anatômicos (morfologia 3D)…"):
+        _anat = compute_anatomy(
+            volume, vol_data["spacing"],
+            crown_at_high=_crown_hi,
+            cervical_frac=_cerv_frac,
+        )
+    _r1 = st.columns(3)
+    _r1[0].metric("Externo (total)", f"{_anat['externo_mm3']:.4f} mm³")
+    _r1[1].metric("Cavidade interna", f"{_anat['cavidade_interna_mm3']:.4f} mm³")
+    _r1[2].metric("Canal radicular", f"{_anat['canal_radicular_mm3']:.4f} mm³")
+    _r2 = st.columns(3)
+    _r2[0].metric("Coroa", f"{_anat['coroa_mm3']:.4f} mm³")
+    _r2[1].metric("Raiz", f"{_anat['raiz_mm3']:.4f} mm³")
+    _r2[2].metric("Sólido mineralizado", f"{_anat['solido_dente_mm3']:.4f} mm³")
+    st.caption(
+        f"Plano cervical na fatia {_anat['cervical_index']} (eixo {_anat['long_axis']}) · "
+        f"limiar dente/ar (Otsu) = {_anat['air_thresh']} · "
+        "Externo = Sólido + Cavidade; Coroa + Raiz = Externo. "
+        "Métricas geométricas (nº de voxels × espaçamento³)."
+    )
+
+    with st.expander("📚 Referência anatômica — raízes e canais esperados (Req. 7)"):
+        _teeth = references.all_teeth()
+        _labels = [f"{fdi} — {nome}" for fdi, nome in _teeth]
+        _sel = st.selectbox("Dente (notação FDI)", _labels, index=0, key="ref_tooth")
+        _fdi = int(_sel.split(" — ")[0])
+        _ref = references.get_reference(fdi=_fdi)
+        _rc = st.columns(2)
+        _rc[0].metric("Raízes (típico)", _ref["raizes"])
+        _rc[1].metric("Canais (típico)", _ref["canais"])
+        st.caption(
+            _ref["notas"]
+            + f"  ·  Canal radicular medido nesta aba: {_anat['canal_radicular_mm3']:.4f} mm³."
+            + "  Fonte: " + _ref["fonte"]
+        )
+        if st.button("Atualizar referências (online)", key="ref_update"):
+            try:
+                references.update_from_url()
+                st.success("Referências atualizadas da internet.")
+                st.rerun()
+            except Exception as _e:  # noqa: BLE001
+                st.info(f"Base local em uso (online indisponível: {_e}).")
+
 
 # ---------------------------------------------------------------------------
 # Aba 4 — Métricas quantitativas e exportação
@@ -471,12 +573,22 @@ with tab_met:
     st.subheader("Relatório PDF")
     if st.button("Gerar relatório PDF", key="gen_pdf"):
         with st.spinner("Gerando PDF…"):
+            _anat_pdf = compute_anatomy(volume, vol_data["spacing"])
+            _ref_lbl = st.session_state.get("ref_tooth")
+            _ref_pdf = None
+            if _ref_lbl:
+                try:
+                    _ref_pdf = references.get_reference(fdi=int(str(_ref_lbl).split(" — ")[0]))
+                except Exception:
+                    _ref_pdf = None
             pdf_bytes = generate_pdf(
                 vol_data=vol_data,
                 thresholds={n: DEFAULT_THRESHOLDS[n] for n in tissue_names},
                 volumes_mm3=volumes_mm3,
                 areas_mm2=areas_mm2,
                 distances=distances_for_report,
+                anatomy=_anat_pdf,
+                tooth_ref=_ref_pdf,
             )
         st.download_button(
             label="⬇ Baixar relatório PDF",

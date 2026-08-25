@@ -137,6 +137,48 @@ def _load_synthetic_phantom() -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Normalização de intensidade (aceita micro-CT em qualquer escala: uint16/HU)
+# ---------------------------------------------------------------------------
+def _to_display01(vol):
+    """Normaliza para [0,1] apenas para exibição/segmentação.
+
+    - Se o volume já está em [0,1] (ex.: phantom sintético), NÃO altera.
+    - Caso contrário, aplica janela robusta por percentis (P0.5–P99.5),
+      ignorando outliers extremos comuns em micro-CT.
+    Retorna (volume_norm float32, (lo, hi), foi_normalizado).
+    """
+    v = vol.astype(np.float32, copy=False)
+    vmin = float(np.nanmin(v))
+    vmax = float(np.nanmax(v))
+    if vmin >= -0.01 and vmax <= 1.01:
+        return v, (vmin, vmax), False
+    lo, hi = np.percentile(v, [0.5, 99.5])
+    lo = float(lo); hi = float(hi)
+    if hi <= lo:
+        hi = lo + 1.0
+    out = np.clip((v - lo) / (hi - lo), 0.0, 1.0).astype(np.float32)
+    return out, (lo, hi), True
+
+
+def _finalize(d):
+    """Pós-processa o dict do loader: normaliza intensidade p/ [0,1] e anota metadados.
+
+    Princípio 1: as métricas (volume, área, distância) são geométricas
+    (contagem de voxels × espaçamento³, malha, espaçamento) e NÃO dependem
+    da magnitude de intensidade — logo, a normalização não afeta os números.
+    """
+    norm, (lo, hi), was = _to_display01(d["volume"])
+    d["volume"] = norm
+    d["intensity_window"] = (round(lo, 6), round(hi, 6))
+    d["normalized"] = bool(was)
+    if was:
+        _msg = ("Intensidades normalizadas para [0,1] (janela robusta P0.5-P99.5) "
+                "apenas para exibicao e thresholds; metricas geometricas nao sao afetadas.")
+        d["warning"] = (d.get("warning", "") + " " + _msg).strip()
+    return d
+
+
+# ---------------------------------------------------------------------------
 # Ponto de entrada único
 # ---------------------------------------------------------------------------
 
@@ -158,7 +200,7 @@ def load_volume(path: str | None = None, *, synthetic: bool = False) -> dict:
             warning        – (opcional) aviso sobre limitações do dataset
     """
     if synthetic:
-        return _load_synthetic_phantom()
+        return _finalize(_load_synthetic_phantom())
 
     if path is None:
         raise ValueError("Forneça 'path' ou use synthetic=True.")
@@ -167,15 +209,15 @@ def load_volume(path: str | None = None, *, synthetic: bool = False) -> dict:
 
     if p.is_dir():
         if any(p.glob("*.dcm")):
-            return _load_dicom(p)
+            return _finalize(_load_dicom(p))
         if any(p.glob("*.tif")) or any(p.glob("*.tiff")):
-            return _load_tiff_stack(p)
+            return _finalize(_load_tiff_stack(p))
         raise ValueError(
             f"Pasta {p} não contém arquivos .dcm ou .tif/.tiff reconhecidos."
         )
 
     if p.suffix == ".nii" or str(p).endswith(".nii.gz"):
-        return _load_nifti(p)
+        return _finalize(_load_nifti(p))
 
     raise ValueError(
         f"Formato não reconhecido: {p}. "

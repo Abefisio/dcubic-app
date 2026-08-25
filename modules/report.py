@@ -43,6 +43,8 @@ def generate_pdf(
     volumes_mm3: dict[str, float],
     areas_mm2: dict[str, float],
     distances: list[dict] | None = None,
+    anatomy: dict | None = None,
+    tooth_ref: dict | None = None,
 ) -> bytes:
     """
     Gera relatório PDF em memória e retorna os bytes prontos para download.
@@ -122,6 +124,41 @@ def generate_pdf(
             [d["label"], f"{d['mm']:.4f}"] for d in distances
         ]
         story.append(_table(dist_rows, [12 * cm, 5 * cm]))
+        story.append(Spacer(1, 10))
+
+    if anatomy:
+        story.append(Paragraph("Volumes anatômicos (morfologia 3D)", h2_s))
+        story.append(Paragraph(
+            "Regiões derivadas por morfologia 3D sobre os voxels brutos (Princípio 1): "
+            "envelope externo, cavidade interna (câmara + canais), canal radicular, coroa e raiz.",
+            note_s,
+        ))
+        _an_rows = [
+            ["Região", "Volume (mm³)"],
+            ["Externo (total)", f"{anatomy.get('externo_mm3', 0):.4f}"],
+            ["Sólido mineralizado", f"{anatomy.get('solido_dente_mm3', 0):.4f}"],
+            ["Cavidade interna", f"{anatomy.get('cavidade_interna_mm3', 0):.4f}"],
+            ["Canal radicular", f"{anatomy.get('canal_radicular_mm3', 0):.4f}"],
+            ["Coroa", f"{anatomy.get('coroa_mm3', 0):.4f}"],
+            ["Raiz", f"{anatomy.get('raiz_mm3', 0):.4f}"],
+        ]
+        _ta = _table(_an_rows, [8 * cm, 9 * cm])
+        _ta.setStyle(TableStyle([("ALIGN", (1, 1), (-1, -1), "RIGHT")]))
+        story.append(_ta)
+        story.append(Spacer(1, 10))
+
+    if tooth_ref:
+        story.append(Paragraph("Referência anatômica do dente", h2_s))
+        story.append(_table([
+            ["Item", "Valor"],
+            ["Dente", str(tooth_ref.get("nome", "-"))],
+            ["Raízes (típico)", str(tooth_ref.get("raizes", "-"))],
+            ["Canais (típico)", str(tooth_ref.get("canais", "-"))],
+        ], [6 * cm, 11 * cm]))
+        if tooth_ref.get("notas"):
+            story.append(Paragraph("Nota: " + str(tooth_ref["notas"]), note_s))
+        if tooth_ref.get("fonte"):
+            story.append(Paragraph("Fonte: " + str(tooth_ref["fonte"]), note_s))
         story.append(Spacer(1, 10))
 
     story.append(HRFlowable(width="100%", spaceBefore=12))

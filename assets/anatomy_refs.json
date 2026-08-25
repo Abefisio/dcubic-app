@@ -1,0 +1,135 @@
+{
+  "fonte": "Literatura endodôntica (nº de raízes/canais; Vertucci). Valores típicos.",
+  "grupos": {
+    "ic_sup": {
+      "nome": "Incisivo central superior",
+      "raizes": "1",
+      "canais": "1 (Vertucci I)",
+      "notas": "Raiz única, cônica; canal amplo."
+    },
+    "il_sup": {
+      "nome": "Incisivo lateral superior",
+      "raizes": "1",
+      "canais": "1 (Vertucci I)",
+      "notas": "Raiz única; possível curvatura distal/palatina."
+    },
+    "c_sup": {
+      "nome": "Canino superior",
+      "raizes": "1",
+      "canais": "1 (Vertucci I)",
+      "notas": "Raiz mais longa da arcada; canal único amplo."
+    },
+    "pm1_sup": {
+      "nome": "1º pré-molar superior",
+      "raizes": "2 (freq.)",
+      "canais": "2 (vestibular + palatino)",
+      "notas": "Comumente 2 raízes/2 canais; pode ser 1 raiz."
+    },
+    "pm2_sup": {
+      "nome": "2º pré-molar superior",
+      "raizes": "1",
+      "canais": "1–2",
+      "notas": "Geralmente 1 raiz; canais 1 ou 2 (Vertucci II/IV)."
+    },
+    "m1_sup": {
+      "nome": "1º molar superior",
+      "raizes": "3 (MV, DV, palatina)",
+      "canais": "3–4 (MV2 frequente)",
+      "notas": "Procurar o 2º canal mesiovestibular (MV2)."
+    },
+    "m2_sup": {
+      "nome": "2º molar superior",
+      "raizes": "3",
+      "canais": "3 (variável)",
+      "notas": "Raízes podem ser fusionadas; MV2 menos frequente."
+    },
+    "m3_sup": {
+      "nome": "3º molar superior",
+      "raizes": "1–3 (variável)",
+      "canais": "variável",
+      "notas": "Anatomia muito variável."
+    },
+    "ic_inf": {
+      "nome": "Incisivo central inferior",
+      "raizes": "1",
+      "canais": "1 (às vezes 2)",
+      "notas": "Pode ter 2 canais (V/L) — Vertucci III."
+    },
+    "il_inf": {
+      "nome": "Incisivo lateral inferior",
+      "raizes": "1",
+      "canais": "1 (às vezes 2)",
+      "notas": "Semelhante ao central; verificar 2º canal."
+    },
+    "c_inf": {
+      "nome": "Canino inferior",
+      "raizes": "1",
+      "canais": "1 (raramente 2)",
+      "notas": "Raiz longa; raramente bifurca."
+    },
+    "pm1_inf": {
+      "nome": "1º pré-molar inferior",
+      "raizes": "1",
+      "canais": "1 (às vezes 2)",
+      "notas": "Pode ter 2 canais; anatomia enganosa."
+    },
+    "pm2_inf": {
+      "nome": "2º pré-molar inferior",
+      "raizes": "1",
+      "canais": "1",
+      "notas": "Geralmente 1 canal."
+    },
+    "m1_inf": {
+      "nome": "1º molar inferior",
+      "raizes": "2 (mesial, distal)",
+      "canais": "3–4",
+      "notas": "Mesial: 2 canais (MV/ML); distal: 1–2. Ver canal médio-mesial."
+    },
+    "m2_inf": {
+      "nome": "2º molar inferior",
+      "raizes": "2",
+      "canais": "3 (variável)",
+      "notas": "Raízes podem fundir; canal em 'C' possível."
+    },
+    "m3_inf": {
+      "nome": "3º molar inferior",
+      "raizes": "1–2 (variável)",
+      "canais": "variável",
+      "notas": "Anatomia muito variável."
+    }
+  },
+  "fdi": {
+    "11": "ic_sup",
+    "12": "il_sup",
+    "13": "c_sup",
+    "14": "pm1_sup",
+    "15": "pm2_sup",
+    "16": "m1_sup",
+    "17": "m2_sup",
+    "18": "m3_sup",
+    "21": "ic_sup",
+    "22": "il_sup",
+    "23": "c_sup",
+    "24": "pm1_sup",
+    "25": "pm2_sup",
+    "26": "m1_sup",
+    "27": "m2_sup",
+    "28": "m3_sup",
+    "31": "ic_inf",
+    "32": "il_inf",
+    "33": "c_inf",
+    "34": "pm1_inf",
+    "35": "pm2_inf",
+    "36": "m1_inf",
+    "37": "m2_inf",
+    "38": "m3_inf",
+    "41": "ic_inf",
+    "42": "il_inf",
+    "43": "c_inf",
+    "44": "pm1_inf",
+    "45": "pm2_inf",
+    "46": "m1_inf",
+    "47": "m2_inf",
+    "48": "m3_inf"
+  }
+}
