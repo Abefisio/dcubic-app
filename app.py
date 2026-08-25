@@ -7,6 +7,20 @@ import os
 import yaml
 import streamlit as st
 import numpy as np
+import extra_streamlit_components as stx
+
+# Patch: extra-streamlit-components 0.1.81 cria um novo CookieManager (e
+# renderiza um componente iframe) a cada rerun, causando um loop infinito de
+# reruns que deixa a página em branco. O cache_resource garante que o componente
+# seja instanciado apenas uma vez por ciclo de vida do servidor.
+_original_cm = stx.CookieManager
+
+@st.cache_resource
+def _cached_cookie_manager():
+    return _original_cm()
+
+stx.CookieManager = _cached_cookie_manager
+
 import streamlit_authenticator as stauth
 
 from modules.loader import load_volume

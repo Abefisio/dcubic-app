@@ -11,6 +11,8 @@ brutos. O render não altera os dados nem os masks. Métricas de volume/área
 """
 
 from __future__ import annotations
+import os
+os.environ.setdefault("PYVISTA_OFF_SCREEN", "true")
 import numpy as np
 import pyvista as pv
 import plotly.graph_objects as go

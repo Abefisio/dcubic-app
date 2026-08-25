@@ -9,6 +9,7 @@ from __future__ import annotations
 import io
 import os
 import tempfile
+os.environ.setdefault("PYVISTA_OFF_SCREEN", "true")
 import numpy as np
 import pyvista as pv
 
