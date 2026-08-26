@@ -48,6 +48,8 @@ from modules.report import generate_pdf
 from modules.anatomy import compute_anatomy
 from modules import references
 
+_MAX_VOXELS = 12_000_000  # ponytail: ajuste conforme RAM disponível (Streamlit Cloud ~1 GB)
+
 st.set_page_config(
     page_title="DCubic Image System Platform",
     page_icon="🔬",
@@ -211,6 +213,23 @@ def _load_uploaded_vol(files):
     return load_volume(tmpdir)
 
 
+# Chave de hash para ndarrays: shape + dtype + soma total (O(N) mas via SIMD, ~µs).
+# Evita serializar arrays grandes; colisão improvável para volumes/masks distintos.
+_arr_hash = lambda a: (a.shape, a.dtype.str, float(a.sum()))
+
+
+@st.cache_data(hash_funcs={np.ndarray: _arr_hash}, show_spinner=False)
+def _build_meshes_cached(masks, spacing, exclude_tuple):
+    """Malhas 3D (marching cubes) — re-calcula só quando masks ou spacing mudam."""
+    return build_all_meshes(masks, spacing, exclude=set(exclude_tuple))
+
+
+@st.cache_data(hash_funcs={np.ndarray: _arr_hash}, show_spinner=False)
+def _compute_anatomy_cached(volume, spacing, crown_at_high, cervical_frac):
+    """Volumes anatômicos — re-calcula só quando o volume ou parâmetros mudam."""
+    return compute_anatomy(volume, spacing, crown_at_high=crown_at_high, cervical_frac=cervical_frac)
+
+
 st.sidebar.header("Dados")
 _uploads = st.sidebar.file_uploader(
     "Carregar micro-CT (DICOM .dcm, TIFF .tif/.tiff ou NIfTI .nii/.nii.gz). "
@@ -234,6 +253,14 @@ else:
 
 volume   = vol_data["volume"]
 Z, Y, X  = volume.shape
+
+if volume.size > _MAX_VOXELS:
+    st.warning(
+        f"⚠️ Volume grande: {volume.size:,} voxels "
+        f"(limite recomendado: {_MAX_VOXELS:,}). "
+        "O Streamlit Cloud tem ~1 GB de RAM — volumes maiores podem causar falha de memória. "
+        "Considere enviar um recorte ou versão reamostrada do exame."
+    )
 
 with st.expander("ℹ️ Dataset carregado", expanded=False):
     if "warning" in vol_data:
@@ -379,20 +406,36 @@ with tab_3d:
                 key=f"op3d_{name}",
             )
 
+    # Camada mais externa = maior bounding box entre as camadas presentes nos masks.
+    # Funciona para phantom e para micro-CT real (independente do nome ou índice).
+    _outer_name = render_tissue_names[0] if render_tissue_names else None
+    _best_bb = -1
+    for _tn in render_tissue_names:
+        _m = masks.get(_tn)
+        if _m is None or not _m.any():
+            continue
+        _nz = np.nonzero(_m)
+        _bb = int(np.prod([int(_v.max() - _v.min() + 1) for _v in _nz]))
+        if _bb > _best_bb:
+            _best_bb, _outer_name = _bb, _tn
+
     if _modo_transp != "Personalizado":
         _N = len(render_tissue_names)
-        def _preset_op(i):
+        def _preset_op(i, n):
             if _modo_transp == "Contorno (casca translúcida)":
-                # superfície externa quase invisível (casca); estruturas internas sólidas
-                return 0.07 if i == 0 else 1.0
+                # camada com maior bounding box = mais externa → casca; demais → sólidas
+                return 0.07 if n == _outer_name else 1.0
             if _modo_transp == "Raio-X (tudo translúcido)":
                 return 0.30
             if _modo_transp == "Sólido (tudo opaco)":
                 return 1.0
             # externo transparente -> interno opaco: opacidade cresce com a profundidade/densidade
             return round(0.12 + 0.88 * (i / (_N - 1) if _N > 1 else 1.0), 2)
-        opacities = {n: _preset_op(i) for i, n in enumerate(render_tissue_names)}
-        st.caption("Opacidades definidas pelo modo selecionado — os sliders acima ficam como referência.")
+        opacities = {n: _preset_op(i, n) for i, n in enumerate(render_tissue_names)}
+        st.caption(
+            f"Opacidades definidas pelo modo selecionado — os sliders acima ficam como referência. "
+            f"{'Camada externa detectada: ' + (_outer_name or '—') if _modo_transp == 'Contorno (casca translúcida)' else ''}"
+        )
 
     spacing_z = vol_data["spacing"][0]
     max_z_mm  = float(Z * spacing_z)
@@ -405,7 +448,7 @@ with tab_3d:
     apply_clip = clip_z_mm < max_z_mm
 
     with st.spinner("Gerando malhas 3D (marching cubes)…"):
-        meshes_3d = build_all_meshes(masks, vol_data["spacing"], exclude={"Fundo"})
+        meshes_3d = _build_meshes_cached(masks, vol_data["spacing"], ("Fundo",))
 
     mesh_info = {n: (m.n_points if m else 0) for n, m in meshes_3d.items()}
     st.caption(
@@ -447,11 +490,7 @@ with tab_anat:
             0.0, 1.0, 0.55, 0.01, key="an_cervfrac",
         )
     with st.spinner("Calculando volumes anatômicos (morfologia 3D)…"):
-        _anat = compute_anatomy(
-            volume, vol_data["spacing"],
-            crown_at_high=_crown_hi,
-            cervical_frac=_cerv_frac,
-        )
+        _anat = _compute_anatomy_cached(volume, vol_data["spacing"], _crown_hi, _cerv_frac)
     _r1 = st.columns(3)
     _r1[0].metric("Externo (total)", f"{_anat['externo_mm3']:.4f} mm³")
     _r1[1].metric("Cavidade interna", f"{_anat['cavidade_interna_mm3']:.4f} mm³")
@@ -505,7 +544,7 @@ with tab_met:
 
     with st.spinner("Calculando métricas e gerando malhas…"):
         volumes_mm3 = compute_volumes(masks_met, vol_data["spacing"])
-        meshes_met  = build_all_meshes(masks_met, vol_data["spacing"], exclude={"Fundo"})
+        meshes_met  = _build_meshes_cached(masks_met, vol_data["spacing"], ("Fundo",))
         areas_mm2   = compute_surface_areas(meshes_met)
 
     st.subheader("Volume e área de superfície por tecido")

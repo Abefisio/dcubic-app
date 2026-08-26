@@ -21,11 +21,12 @@ via upload na barra lateral. Normalização de intensidade adicionada — aceita
 *Refinar:* validação com exame real; suporte a metadados de espaçamento de voxel de mais scanners.
 
 ### 2. Áreas que não são sulcos → sólidas; contornos → transparentes
-**Status: FEITO.**
-Segmentação por limiar + opacidade por tecido + **Modo "Contorno (casca translúcida)"** adicionado
-ao Render 3D: superfície externa (Tecido mole, i=0) com opacidade 0.07 (casca quase invisível),
-estruturas internas (Esmalte/Osso, Núcleo denso) com opacidade 1.0 (sólidas).
-Princípio 1 mantido: a opacidade é configuração visual — não altera voxels nem métricas.
+**Status: FEITO (robusto para micro-CT real).**
+Modo "Contorno (casca translúcida)" no Render 3D: a camada **mais externa** é detectada
+dinamicamente pelo maior bounding box entre as camadas com voxels > 0 (funciona com qualquer
+ordenação de tecidos, inclusive quando "Tecido mole" está ausente no exame real). Camada
+externa: opacidade 0.07 (casca quase invisível); demais: 1.0 (sólidas). O modo informa qual
+camada foi detectada como externa. Princípio 1 mantido: opacidade é configuração visual.
 
 ### 3. Partes externas transparentes / partes internas visíveis
 **Status: FEITO.**
@@ -76,8 +77,12 @@ registramos a mudança no changelog abaixo.
 - **2026-08-25** — Requisito 7: módulo de referências de anatomia dental (FDI, raízes/canais, Vertucci) + atualização online.
 - **2026-08-25** — Relatório PDF enriquecido: seções "Volumes anatômicos" e "Referência anatômica do dente".
 - **2026-08-25** — Requisito 2: modo "Contorno (casca translúcida)" no Render 3D — superfície externa quase invisível (op. 0.07), estruturas internas sólidas (op. 1.0).
+- **2026-08-25** — Robustez pré-calibração:
+  - Req. 2: Contorno genérico — camada externa detectada por maior bounding box (funciona sem "Tecido mole").
+  - Cache de desempenho: `_build_meshes_cached` e `_compute_anatomy_cached` com hash por (shape, dtype, sum) evitam recomputar marching cubes e morfologia 3D a cada slider de opacidade.
+  - Guarda de memória: aviso quando volume > 12 M voxels; constante `_MAX_VOXELS` ajustável.
 
-> **Todos os 8 requisitos têm ao menos a base implementada. Req. 2 agora FEITO.**
+> **Todos os 8 requisitos têm ao menos a base implementada. App robusto para micro-CT real (pré-calibração).**
 
 ## Próximos passos sugeridos (ordem)
 1. **Calibração com exame real** — validar Req. 6 (canal/plano cervical) e a segmentação; curar as referências (Req. 7).
