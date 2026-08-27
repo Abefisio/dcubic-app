@@ -47,6 +47,7 @@ from modules.metrics import (
 from modules.report import generate_pdf
 from modules.anatomy import compute_anatomy
 from modules import references
+from modules.mesh_loader import load_meshes
 
 _MAX_VOXELS = 12_000_000  # ponytail: ajuste conforme RAM disponível (Streamlit Cloud ~1 GB)
 
@@ -232,12 +233,140 @@ def _compute_anatomy_cached(volume, spacing, crown_at_high, cervical_frac):
 
 st.sidebar.header("Dados")
 _uploads = st.sidebar.file_uploader(
-    "Carregar micro-CT (DICOM .dcm, TIFF .tif/.tiff ou NIfTI .nii/.nii.gz). "
+    "Carregar micro-CT (DICOM .dcm, TIFF .tif/.tiff, NIfTI .nii/.nii.gz) "
+    "ou malhas STL exportadas pelo Bruker CTAnalyser (.stl). "
     "Para DICOM/TIFF, selecione TODOS os cortes de uma vez.",
-    type=["dcm", "tif", "tiff", "nii", "gz"],
+    type=["dcm", "tif", "tiff", "nii", "gz", "stl"],
     accept_multiple_files=True,
 )
 
+# ---------------------------------------------------------------------------
+# MODO STL — ativado quando há pelo menos um .stl no upload OU quando o
+# usuário carrega da pasta local. Caminho paralelo ao pipeline de volume.
+# ---------------------------------------------------------------------------
+
+# Caminho A: leitura da pasta local (para arquivos grandes que excedem o
+# limite HTTP do Streamlit). Decisão consciente: este app roda localmente
+# com acesso restrito — revisar antes de publicar na nuvem.
+_stl_folder = st.sidebar.text_input(
+    "Pasta com STL (leitura local)",
+    value=os.path.expanduser("~/Desktop/DCUBIC-SITE/MICROTOMO"),
+    key="stl_folder_path",
+)
+_load_folder_btn = st.sidebar.button("Carregar STL da pasta", key="stl_load_folder")
+
+# Coletar STLs do upload — filtra apenas .stl, ignora outros formatos silenciosamente
+_stl_from_upload = []
+for _uf in (_uploads or []):
+    if _uf.name.lower().endswith(".stl"):
+        try:
+            _stl_from_upload.append((_uf.name, _uf.getvalue()))
+        except Exception as _ue:
+            st.sidebar.warning(f"Upload ignorado ({_uf.name}): {_ue}")
+
+# Coletar STLs da pasta local quando o botão é acionado
+_stl_from_folder = []
+if _load_folder_btn:
+    import glob as _glob
+    _folder_path = _stl_folder.strip()
+    if not os.path.isdir(_folder_path):
+        st.sidebar.warning(f"Pasta não encontrada: {_folder_path}")
+    else:
+        _found = sorted(_glob.glob(os.path.join(_folder_path, "*.stl")))
+        if not _found:
+            _found = sorted(_glob.glob(os.path.join(_folder_path, "*.STL")))
+        if not _found:
+            st.sidebar.warning(f"Nenhum arquivo .stl encontrado em: {_folder_path}")
+        else:
+            for _fp in _found:
+                _fname = os.path.basename(_fp)
+                try:
+                    with open(_fp, "rb") as _fh:
+                        _stl_from_folder.append((_fname, _fh.read()))
+                except Exception as _fe:
+                    st.sidebar.warning(f"Erro ao ler {_fname}: {_fe}")
+
+# Combinar upload + pasta, sem duplicar por nome (pasta tem prioridade)
+_stl_seen = set()
+_stl_combined = []
+for _n, _b in _stl_from_folder + _stl_from_upload:
+    _stem = os.path.splitext(_n)[0]
+    if _stem not in _stl_seen:
+        _stl_seen.add(_stem)
+        _stl_combined.append((_n, _b))
+
+_is_stl = bool(_stl_combined)
+
+if _is_stl:
+    _STL_NEUTRAL = [(150, 180, 210), (180, 150, 120), (120, 180, 150), (200, 150, 180)]
+
+    def _stl_color(_n, _idx):
+        _nl = _n.lower()
+        if any(_k in _nl for _k in ("esmalte", "enamel")):
+            return (230, 230, 235)
+        if any(_k in _nl for _k in ("dentina", "dentin")):
+            return (220, 200, 150)
+        if any(_k in _nl for _k in ("raiz", "canal", "root", "voi")):
+            return (200, 60, 60)
+        return _STL_NEUTRAL[_idx % len(_STL_NEUTRAL)]
+
+    with st.spinner("Carregando e decimando malhas STL…"):
+        _meshes_info = load_meshes(_stl_combined)
+
+    _stl_errors = [m for m in _meshes_info if "error" in m]
+    if _stl_errors:
+        st.warning(
+            "Falha ao carregar: "
+            + ", ".join(f"{m['name']} ({m['error']})" for m in _stl_errors)
+        )
+
+    _stl_ok = [m for m in _meshes_info if "error" not in m]
+    if not _stl_ok:
+        st.error("Nenhuma malha STL válida foi carregada.")
+        st.stop()
+
+    st.sidebar.header("Estruturas STL")
+    _meshes_dict = {}
+    _tissue_colors_stl = {}
+    _opac_dict = {}
+    for _i, _mi in enumerate(_stl_ok):
+        _col = _stl_color(_mi["name"], _i)
+        _tissue_colors_stl[_mi["name"]] = _col
+        _vis = st.sidebar.checkbox(_mi["name"], value=True, key=f"stl_vis_{_i}")
+        _op = st.sidebar.slider(f"Opacidade — {_mi['name']}", 0.0, 1.0, 1.0, 0.05, key=f"stl_op_{_i}")
+        if _vis:
+            _meshes_dict[_mi["name"]] = _mi["mesh"]
+            _opac_dict[_mi["name"]] = _op
+
+    st.subheader("Render 3D — malhas STL")
+    if _meshes_dict:
+        _fig_stl = create_plotly_3d(
+            _meshes_dict, _tissue_colors_stl, opacities=_opac_dict, clip_z_mm=None
+        )
+        st.plotly_chart(_fig_stl, use_container_width=True)
+    else:
+        st.info("Ative ao menos uma estrutura na barra lateral para visualizar.")
+
+    st.subheader("Métricas em unidades nativas do STL — calibração de voxel pendente (não são mm³)")
+    st.dataframe(
+        [
+            {
+                "Estrutura": m["name"],
+                "Volume (un. nativas)": round(m["volume_native"], 2),
+                "Área (un. nativas)": round(m["area_native"], 2),
+                "Faces (original)": m["n_faces"],
+                "Faces (exibição)": m["n_faces_display"],
+            }
+            for m in _stl_ok
+        ],
+        use_container_width=True,
+    )
+
+    st.stop()
+
+# ---------------------------------------------------------------------------
+# MODO VOLUME (voxels) — comportamento original inalterado
+# ---------------------------------------------------------------------------
 if _uploads:
     try:
         _files = tuple((f.name, f.getvalue()) for f in _uploads)
