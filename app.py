@@ -364,14 +364,36 @@ if _is_stl:
         st.stop()
 
     st.sidebar.header("Estruturas STL")
+    st.sidebar.markdown("**Apresentação (didático)**")
+    _pc1, _pc2, _pc3 = st.sidebar.columns(3)
+    if _pc1.button("Sólido", key="stl_preset_solid"):
+        st.session_state["stl_preset_op"] = 1.0
+        st.session_state.pop("stl_op_0", None)
+    if _pc2.button("Translúcido", key="stl_preset_trans"):
+        st.session_state["stl_preset_op"] = 0.35
+        st.session_state.pop("stl_op_0", None)
+    if _pc3.button("Silhueta", key="stl_preset_sil"):
+        st.session_state["stl_preset_op"] = 0.12
+        st.session_state.pop("stl_op_0", None)
+    _preset_op = float(st.session_state.get("stl_preset_op", 1.0))
+
     _meshes_dict = {}
     _tissue_colors_stl = {}
     _opac_dict = {}
     for _i, _mi in enumerate(_stl_ok):
-        _col = _stl_color(_mi["name"], _i)
-        _tissue_colors_stl[_mi["name"]] = _col
+        _col_tuple = _stl_color(_mi["name"], _i)
+        _col_hex_default = "#{:02x}{:02x}{:02x}".format(*_col_tuple)
+        _picked_hex = st.sidebar.color_picker(
+            f"Cor — {_mi['name']}", value=_col_hex_default, key=f"stl_color_{_i}"
+        )
+        _ph = _picked_hex.lstrip("#")
+        _col_used = tuple(int(_ph[j:j + 2], 16) for j in (0, 2, 4))
+        _tissue_colors_stl[_mi["name"]] = _col_used
         _vis = st.sidebar.checkbox(_mi["name"], value=True, key=f"stl_vis_{_i}")
-        _op = st.sidebar.slider(f"Opacidade — {_mi['name']}", 0.0, 1.0, 1.0, 0.05, key=f"stl_op_{_i}")
+        _op = st.sidebar.slider(
+            f"Opacidade fina — {_mi['name']}", 0.0, 1.0, _preset_op, 0.05,
+            key=f"stl_op_{_i}",
+        )
         if _vis:
             _meshes_dict[_mi["name"]] = _mi["mesh"]
             _opac_dict[_mi["name"]] = _op
