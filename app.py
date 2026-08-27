@@ -104,7 +104,7 @@ def _dc_molar_sources():
 _USERS_YAML = os.path.join(os.path.dirname(os.path.abspath(__file__)), "auth", "users.yaml")
 
 if os.path.exists(_USERS_YAML):
-    with open(_USERS_YAML, "r") as _f:
+    with open(_USERS_YAML, "r", encoding="utf-8") as _f:
         _auth_config = yaml.safe_load(_f)
 else:
     # Streamlit Cloud: credenciais injetadas via st.secrets (objeto imutável).
