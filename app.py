@@ -300,31 +300,33 @@ if _load_folder_btn:
 
 if st.sidebar.button("Limpar STL", key="stl_clear"):
     st.session_state.pop("stl_paths", None)
+    st.session_state.pop("stl_selected_path", None)
+    st.session_state.pop("_stl_last", None)
     st.rerun()
 
-# Construir chave de cache (path, mtime) a partir dos caminhos persistidos.
-# Roda em TODO rerun — leve (só stat de disco, sem ler bytes).
-_stl_path_mtime = tuple(
-    (_fp, os.path.getmtime(_fp))
-    for _fp in st.session_state.get("stl_paths", [])
-    if os.path.isfile(_fp)
-)
-
-# Combinar fontes sem duplicar por stem (disco tem prioridade)
-_stl_seen = set()
+# Seletor de arquivo único — renderiza somente se houver caminhos carregados.
+# Disco tem prioridade: quando há pasta, upload é ignorado.
 _stl_path_mtime_dedup = []
-for _fp, _mt in _stl_path_mtime:
-    _stem = os.path.splitext(os.path.basename(_fp))[0]
-    if _stem not in _stl_seen:
-        _stl_seen.add(_stem)
-        _stl_path_mtime_dedup.append((_fp, _mt))
-
 _stl_upload_dedup = []
-for _n, _b in _stl_from_upload:
-    _stem = os.path.splitext(_n)[0]
-    if _stem not in _stl_seen:
-        _stl_seen.add(_stem)
-        _stl_upload_dedup.append((_n, _b))
+
+_opcoes = st.session_state.get("stl_paths", [])
+if _opcoes:
+    _sel = st.sidebar.radio(
+        "Estrutura a exibir (uma por vez)",
+        options=_opcoes,
+        format_func=lambda p: os.path.splitext(os.path.basename(p))[0],
+        key="stl_selected_path",
+    )
+    # Limpar cache se a seleção mudou desde o último rerun
+    if _sel != st.session_state.get("_stl_last"):
+        _load_stl_from_paths.clear()
+        st.session_state["_stl_last"] = _sel
+    if _sel and os.path.isfile(_sel):
+        _stl_path_mtime_dedup = [(_sel, os.path.getmtime(_sel))]
+else:
+    # Sem pasta carregada: aceita apenas o primeiro .stl do upload
+    if _stl_from_upload:
+        _stl_upload_dedup = [_stl_from_upload[0]]
 
 _is_stl = bool(_stl_path_mtime_dedup or _stl_upload_dedup)
 
