@@ -219,6 +219,24 @@ def _load_uploaded_vol(files):
 _arr_hash = lambda a: (a.shape, a.dtype.str, float(a.sum()))
 
 
+@st.cache_resource
+def _load_stl_from_paths(path_mtime_pairs):
+    """Carrega e decima STLs a partir de caminhos de disco.
+
+    Usa cache_resource (sem serialização) — objetos PolyData mantidos na
+    memória entre reruns sem reconstrução. Chave: tupla de (caminho, mtime),
+    então o cache invalida automaticamente se qualquer arquivo for modificado.
+    """
+    _files = []
+    for _p, _mt in path_mtime_pairs:
+        try:
+            with open(_p, "rb") as _fh:
+                _files.append((os.path.basename(_p), _fh.read()))
+        except Exception:
+            pass
+    return load_meshes(_files)
+
+
 @st.cache_data(hash_funcs={np.ndarray: _arr_hash}, show_spinner=False)
 def _build_meshes_cached(masks, spacing, exclude_tuple):
     """Malhas 3D (marching cubes) — re-calcula só quando masks ou spacing mudam."""
@@ -264,8 +282,8 @@ for _uf in (_uploads or []):
         except Exception as _ue:
             st.sidebar.warning(f"Upload ignorado ({_uf.name}): {_ue}")
 
-# Coletar STLs da pasta local quando o botão é acionado
-_stl_from_folder = []
+# Quando o botão for clicado: persiste apenas CAMINHOS em session_state.
+# Bytes (~1,3 GB) não são guardados — seriam copiados a cada rerun.
 if _load_folder_btn:
     import glob as _glob
     _folder_path = _stl_folder.strip()
@@ -278,24 +296,37 @@ if _load_folder_btn:
         if not _found:
             st.sidebar.warning(f"Nenhum arquivo .stl encontrado em: {_folder_path}")
         else:
-            for _fp in _found:
-                _fname = os.path.basename(_fp)
-                try:
-                    with open(_fp, "rb") as _fh:
-                        _stl_from_folder.append((_fname, _fh.read()))
-                except Exception as _fe:
-                    st.sidebar.warning(f"Erro ao ler {_fname}: {_fe}")
+            st.session_state["stl_paths"] = _found
 
-# Combinar upload + pasta, sem duplicar por nome (pasta tem prioridade)
+if st.sidebar.button("Limpar STL", key="stl_clear"):
+    st.session_state.pop("stl_paths", None)
+    st.rerun()
+
+# Construir chave de cache (path, mtime) a partir dos caminhos persistidos.
+# Roda em TODO rerun — leve (só stat de disco, sem ler bytes).
+_stl_path_mtime = tuple(
+    (_fp, os.path.getmtime(_fp))
+    for _fp in st.session_state.get("stl_paths", [])
+    if os.path.isfile(_fp)
+)
+
+# Combinar fontes sem duplicar por stem (disco tem prioridade)
 _stl_seen = set()
-_stl_combined = []
-for _n, _b in _stl_from_folder + _stl_from_upload:
+_stl_path_mtime_dedup = []
+for _fp, _mt in _stl_path_mtime:
+    _stem = os.path.splitext(os.path.basename(_fp))[0]
+    if _stem not in _stl_seen:
+        _stl_seen.add(_stem)
+        _stl_path_mtime_dedup.append((_fp, _mt))
+
+_stl_upload_dedup = []
+for _n, _b in _stl_from_upload:
     _stem = os.path.splitext(_n)[0]
     if _stem not in _stl_seen:
         _stl_seen.add(_stem)
-        _stl_combined.append((_n, _b))
+        _stl_upload_dedup.append((_n, _b))
 
-_is_stl = bool(_stl_combined)
+_is_stl = bool(_stl_path_mtime_dedup or _stl_upload_dedup)
 
 if _is_stl:
     _STL_NEUTRAL = [(150, 180, 210), (180, 150, 120), (120, 180, 150), (200, 150, 180)]
@@ -311,7 +342,12 @@ if _is_stl:
         return _STL_NEUTRAL[_idx % len(_STL_NEUTRAL)]
 
     with st.spinner("Carregando e decimando malhas STL…"):
-        _meshes_info = load_meshes(_stl_combined)
+        # Disco: usa cache_resource keyed por (path, mtime) — sem re-ler/re-decimar entre reruns
+        _mi_disk = _load_stl_from_paths(tuple(_stl_path_mtime_dedup)) if _stl_path_mtime_dedup else []
+        # Upload: processa direto (sem cache — bytes já estão em memória)
+        _mi_upload = load_meshes(_stl_upload_dedup) if _stl_upload_dedup else []
+        # Merge (disco tem prioridade — já deduplicado acima)
+        _meshes_info = _mi_disk + _mi_upload
 
     _stl_errors = [m for m in _meshes_info if "error" in m]
     if _stl_errors:

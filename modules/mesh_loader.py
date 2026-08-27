@@ -73,7 +73,7 @@ def load_mesh(data: bytes, name: str, *, decimate_target: int | None = 200_000) 
     # c) gerar malha de exibição (decimada)
     if decimate_target is not None and tri.n_cells > decimate_target:
         ratio = 1.0 - (decimate_target / tri.n_cells)
-        mesh_display = tri.decimate(ratio)
+        mesh_display = tri.decimate_pro(ratio, preserve_topology=True)
     else:
         mesh_display = tri
 
