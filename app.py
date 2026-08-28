@@ -195,7 +195,7 @@ st.markdown(
     "<style>"
     ".block-container{padding-top:0rem !important;}"
     "header[data-testid='stHeader']{height:0;}"
-    "[data-testid='stForm']{max-width:50% !important;margin-left:auto !important;margin-right:auto !important;}"
+    "[data-testid='stForm']{max-width:30% !important;min-width:320px;margin-left:auto !important;margin-right:auto !important;}"
     "</style>",
     unsafe_allow_html=True,
 )
