@@ -3,6 +3,7 @@ DCubic Image System Platform
 Análise de volumes 3D micro-CT — USP/FOUSP — Pesquisa acadêmica
 """
 
+import json
 import os
 import yaml
 import streamlit as st
@@ -111,19 +112,39 @@ def _to_plain(_o):
     return _o
 
 if os.path.exists(_USERS_YAML):
+    # a) local: arquivo auth/users.yaml em disco
     with open(_USERS_YAML, "r", encoding="utf-8") as _f:
         _auth_config = yaml.safe_load(_f)
 else:
-    # Streamlit Cloud: credenciais injetadas via st.secrets["auth"].
-    # st.secrets pode lançar FileNotFoundError se não houver secrets configurados.
-    try:
-        _raw_auth = st.secrets.get("auth", None)
-    except Exception:
-        _raw_auth = None
-    if _raw_auth is None:
-        st.error("Configuração de autenticação não encontrada. Configure st.secrets['auth'] no painel do Streamlit Cloud.")
+    _auth_config = None
+
+    # b) Streamlit Cloud: st.secrets["auth"]
+    if _auth_config is None:
+        try:
+            _raw_auth = st.secrets.get("auth", None)
+            if _raw_auth is not None:
+                _auth_config = _to_plain(_raw_auth)
+        except Exception:
+            pass
+
+    # c) Hugging Face Spaces (e qualquer ambiente com env vars): AUTH_CONFIG_JSON
+    if _auth_config is None:
+        _env_json = os.environ.get("AUTH_CONFIG_JSON")
+        if _env_json:
+            try:
+                _auth_config = json.loads(_env_json)
+            except Exception as _je:
+                st.error(f"AUTH_CONFIG_JSON inválido: {_je}")
+                st.stop()
+
+    # d) nenhum caminho disponível
+    if _auth_config is None:
+        st.error(
+            "Configuração de autenticação não encontrada. "
+            "Configure st.secrets['auth'] (Streamlit Cloud) ou "
+            "AUTH_CONFIG_JSON (Hugging Face / variável de ambiente)."
+        )
         st.stop()
-    _auth_config = _to_plain(_raw_auth)
 
 authenticator = stauth.Authenticate(
     _auth_config["credentials"],
