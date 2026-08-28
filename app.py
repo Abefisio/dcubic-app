@@ -331,24 +331,9 @@ else:
 _is_stl = bool(_stl_path_mtime_dedup or _stl_upload_dedup)
 
 if _is_stl:
-    _STL_NEUTRAL = [(150, 180, 210), (180, 150, 120), (120, 180, 150), (200, 150, 180)]
-
-    def _stl_color(_n, _idx):
-        _nl = _n.lower()
-        if any(_k in _nl for _k in ("esmalte", "enamel")):
-            return (230, 230, 235)
-        if any(_k in _nl for _k in ("dentina", "dentin")):
-            return (220, 200, 150)
-        if any(_k in _nl for _k in ("raiz", "canal", "root", "voi")):
-            return (200, 60, 60)
-        return _STL_NEUTRAL[_idx % len(_STL_NEUTRAL)]
-
     with st.spinner("Carregando e decimando malhas STL…"):
-        # Disco: usa cache_resource keyed por (path, mtime) — sem re-ler/re-decimar entre reruns
         _mi_disk = _load_stl_from_paths(tuple(_stl_path_mtime_dedup)) if _stl_path_mtime_dedup else []
-        # Upload: processa direto (sem cache — bytes já estão em memória)
         _mi_upload = load_meshes(_stl_upload_dedup) if _stl_upload_dedup else []
-        # Merge (disco tem prioridade — já deduplicado acima)
         _meshes_info = _mi_disk + _mi_upload
 
     _stl_errors = [m for m in _meshes_info if "error" in m]
@@ -365,38 +350,33 @@ if _is_stl:
 
     st.sidebar.header("Estruturas STL")
     st.sidebar.markdown("**Apresentação (didático)**")
-    _pc1, _pc2, _pc3 = st.sidebar.columns(3)
-    if _pc1.button("Sólido", key="stl_preset_solid"):
-        st.session_state["stl_preset_op"] = 1.0
-        st.session_state.pop("stl_op_0", None)
-    if _pc2.button("Translúcido", key="stl_preset_trans"):
-        st.session_state["stl_preset_op"] = 0.35
-        st.session_state.pop("stl_op_0", None)
-    if _pc3.button("Silhueta", key="stl_preset_sil"):
-        st.session_state["stl_preset_op"] = 0.12
-        st.session_state.pop("stl_op_0", None)
-    _preset_op = float(st.session_state.get("stl_preset_op", 1.0))
+    if st.sidebar.button("Sólido", key="stl_preset_solid"):
+        st.session_state["stl_opacity"] = 1.0
+    _opacity = st.sidebar.slider(
+        "Opacidade (sólido → transparente)", 0.05, 1.0,
+        st.session_state.get("stl_opacity", 1.0), 0.05, key="stl_opacity",
+    )
+    _appearance = st.sidebar.radio(
+        "Aparência", ["Cinza (tom ajustável)", "Cor personalizada"],
+        key="stl_appearance",
+    )
+    if _appearance == "Cinza (tom ajustável)":
+        _tone = st.sidebar.slider("Tom (claro ↔ escuro)", 0, 255, 235, 1, key="stl_tone")
+        _col = (_tone, _tone, _tone)
+    else:
+        _hex = st.sidebar.color_picker("Cor da estrutura", "#e6e6e6", key="stl_custom_color")
+        _h = _hex.lstrip("#")
+        _col = tuple(int(_h[j:j + 2], 16) for j in (0, 2, 4))
 
     _meshes_dict = {}
     _tissue_colors_stl = {}
     _opac_dict = {}
     for _i, _mi in enumerate(_stl_ok):
-        _col_tuple = _stl_color(_mi["name"], _i)
-        _col_hex_default = "#{:02x}{:02x}{:02x}".format(*_col_tuple)
-        _picked_hex = st.sidebar.color_picker(
-            f"Cor — {_mi['name']}", value=_col_hex_default, key=f"stl_color_{_i}"
-        )
-        _ph = _picked_hex.lstrip("#")
-        _col_used = tuple(int(_ph[j:j + 2], 16) for j in (0, 2, 4))
-        _tissue_colors_stl[_mi["name"]] = _col_used
+        _tissue_colors_stl[_mi["name"]] = _col
         _vis = st.sidebar.checkbox(_mi["name"], value=True, key=f"stl_vis_{_i}")
-        _op = st.sidebar.slider(
-            f"Opacidade fina — {_mi['name']}", 0.0, 1.0, _preset_op, 0.05,
-            key=f"stl_op_{_i}",
-        )
         if _vis:
             _meshes_dict[_mi["name"]] = _mi["mesh"]
-            _opac_dict[_mi["name"]] = _op
+            _opac_dict[_mi["name"]] = _opacity
 
     st.subheader("Render 3D — malhas STL")
     if _meshes_dict:
