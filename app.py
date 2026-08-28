@@ -184,7 +184,11 @@ st.sidebar.caption(f"Logado como: {st.session_state.get('name', '')}")
 # App principal
 # ---------------------------------------------------------------------------
 st.markdown(
-    "<h3 style='margin:0;text-align:left'>DCubic Image System Platform</h3>"
+    "<style>.block-container{padding-top:1rem !important;}</style>",
+    unsafe_allow_html=True,
+)
+st.markdown(
+    "<h4 style='margin:0;text-align:left'>DCubic Image System Platform</h4>"
     "<p style='margin:0;color:#8a93a3;font-size:0.85rem'>"
     "Análise de volumes 3D micro-CT · USP/FOUSP · Pesquisa acadêmica</p>",
     unsafe_allow_html=True,
@@ -423,7 +427,13 @@ if _is_stl:
         _fig_stl.update_layout(
             height=720,
             margin=dict(l=0, r=0, t=0, b=0),
-            scene=dict(dragmode="orbit", aspectmode="data"),
+            scene=dict(
+                dragmode="orbit",
+                aspectmode="data",
+                xaxis=dict(title=dict(font=dict(size=18)), tickfont=dict(size=15)),
+                yaxis=dict(title=dict(font=dict(size=18)), tickfont=dict(size=15)),
+                zaxis=dict(title=dict(font=dict(size=18)), tickfont=dict(size=15)),
+            ),
             updatemenus=[dict(
                 type="buttons",
                 direction="right",
