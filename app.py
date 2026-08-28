@@ -340,10 +340,34 @@ else:
 _is_stl = bool(_stl_path_mtime_dedup or _stl_upload_dedup)
 
 if _is_stl:
-    with st.spinner("Carregando e decimando malhas STL…"):
-        _mi_disk = _load_stl_from_paths(tuple(_stl_path_mtime_dedup)) if _stl_path_mtime_dedup else []
-        _mi_upload = load_meshes(_stl_upload_dedup) if _stl_upload_dedup else []
-        _meshes_info = _mi_disk + _mi_upload
+    _prog = st.progress(0, text="Preparando…")
+
+    def _cb(pct, label):
+        _prog.progress(int(pct), text=f"{label} ({int(pct)}%)")
+
+    # Para _load_stl_from_paths (cacheada): não passa callback — callback
+    # quebraria a chave do cache_resource. Em vez disso, verifica o cache de
+    # disco antecipadamente para dar feedback honesto: cache-hit = 100% imediato;
+    # cache-miss = 25% antes da chamada bloqueante, 100% após.
+    _mi_disk = []
+    if _stl_path_mtime_dedup:
+        _sel_base = os.path.splitext(_stl_path_mtime_dedup[0][0])[0]
+        _disk_cached = (
+            os.path.isfile(_sel_base + ".dcubic_cache.ply")
+            and os.path.isfile(_sel_base + ".dcubic_cache.json")
+        )
+        if _disk_cached:
+            _cb(100, "Carregado do cache")
+        else:
+            _cb(25, "Lendo e decimando STL")
+        _mi_disk = _load_stl_from_paths(tuple(_stl_path_mtime_dedup))
+        if not _disk_cached:
+            _cb(100, "Pronto")
+
+    # Upload: progress_cb funciona plenamente (sem camada de cache)
+    _mi_upload = load_meshes(_stl_upload_dedup, progress_cb=_cb) if _stl_upload_dedup else []
+    _meshes_info = _mi_disk + _mi_upload
+    _prog.empty()
 
     _stl_errors = [m for m in _meshes_info if "error" in m]
     if _stl_errors:

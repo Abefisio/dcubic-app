@@ -16,6 +16,7 @@ def load_mesh(
     *,
     decimate_target: int | None = 200_000,
     cache_key: str | None = None,
+    progress_cb=None,
 ) -> dict:
     """Carrega um STL a partir de bytes e retorna métricas da malha.
 
@@ -38,6 +39,8 @@ def load_mesh(
             mesh_display = pv.read(_ply)
             with open(_jsn, "r", encoding="utf-8") as _jf:
                 _m = json.load(_jf)
+            if progress_cb:
+                progress_cb(100, "Carregado do cache")
             return {
                 "mesh":            mesh_display,
                 "name":            stem,
@@ -56,6 +59,8 @@ def load_mesh(
     try:
         os.write(tmp_fd, data)
         os.close(tmp_fd)
+        if progress_cb:
+            progress_cb(25, "Lendo STL")
         try:
             mesh = pv.read(tmp_path)
         except Exception as exc:
@@ -72,6 +77,8 @@ def load_mesh(
     tri = mesh.triangulate()
 
     # c) medir na malha ORIGINAL
+    if progress_cb:
+        progress_cb(50, "Medindo")
     try:
         vol = abs(float(tri.volume))
     except Exception:
@@ -84,8 +91,9 @@ def load_mesh(
 
     # d) gerar malha de exibição (decimada)
     if decimate_target is not None and tri.n_cells > decimate_target:
-        ratio = 1.0 - (decimate_target / tri.n_cells)
-        mesh_display = tri.decimate_pro(ratio, preserve_topology=True)
+        if progress_cb:
+            progress_cb(75, "Decimando")
+        mesh_display = tri.decimate_pro(ratio := 1.0 - (decimate_target / tri.n_cells), preserve_topology=True)
     else:
         mesh_display = tri
 
@@ -105,6 +113,8 @@ def load_mesh(
         except Exception:
             pass  # falha ao gravar cache não interrompe o fluxo
 
+    if progress_cb:
+        progress_cb(100, "Pronto")
     return {
         "mesh":            mesh_display,
         "name":            stem,
@@ -117,17 +127,18 @@ def load_mesh(
     }
 
 
-def load_meshes(files: list, *, cache_keys: list | None = None) -> list:
+def load_meshes(files: list, *, cache_keys: list | None = None, progress_cb=None) -> list:
     """Carrega vários STL a partir de uma lista de (name, bytes).
 
     cache_keys: lista paralela de cache_key (str ou None) para cada arquivo.
+    progress_cb: callback(pct, label) opcional repassado a load_mesh.
     Arquivos inválidos são registrados com chave 'error' e não interrompem os demais.
     """
     results = []
     for i, (name, data) in enumerate(files):
         ck = cache_keys[i] if cache_keys and i < len(cache_keys) else None
         try:
-            results.append(load_mesh(data, name, cache_key=ck))
+            results.append(load_mesh(data, name, cache_key=ck, progress_cb=progress_cb))
         except Exception as exc:
             results.append({"name": Path(name).stem, "error": str(exc)})
     return results
