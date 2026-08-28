@@ -315,6 +315,68 @@ else:
     _stl_folder = ""
     _load_folder_btn = False
 
+# ---------------------------------------------------------------------------
+# DENTES DE EXEMPLO — download sob demanda do Google Drive
+# ---------------------------------------------------------------------------
+_DRIVE_SAMPLES = {
+    "Esmalte": "1OmWWs6kaUc6bT3gD2jjHMFX41r1g_45P",
+    "Dentina": "1_bbDyFS2QG9qL8xecflwTjuwlKVrjm7J",
+    "Molar":   "1B9z0GMQzHxYegnGY69KLVuPs-U8m38gH",
+}
+_SAMPLE_DIR = "/tmp/dcubic_samples"
+
+st.sidebar.markdown("---")
+st.sidebar.subheader("Dentes de exemplo")
+_sample_sel = st.sidebar.selectbox(
+    "Estrutura de exemplo",
+    ["— selecione —"] + list(_DRIVE_SAMPLES.keys()),
+    key="drive_sample_sel",
+)
+def _stl_valido(_p):
+    """Retorna True se _p é um STL plausível (existe, >100 KB, não é HTML de erro)."""
+    if not os.path.isfile(_p):
+        return False
+    if os.path.getsize(_p) < 100 * 1024:
+        return False
+    try:
+        with open(_p, "rb") as _fv:
+            return not _fv.read(5).startswith(b"<")
+    except Exception:
+        return False
+
+if st.sidebar.button("Carregar dente de exemplo", key="drive_sample_btn"):
+    if _sample_sel == "— selecione —":
+        st.sidebar.warning("Selecione uma estrutura antes de carregar.")
+    else:
+        _fid = _DRIVE_SAMPLES[_sample_sel]
+        _dest = os.path.join(_SAMPLE_DIR, f"{_sample_sel}.stl")
+        if not _stl_valido(_dest):
+            _erro_msg = ""
+            try:
+                import gdown
+                os.makedirs(_SAMPLE_DIR, exist_ok=True)
+                with st.spinner("Baixando dente do Drive…"):
+                    gdown.download(
+                        f"https://drive.google.com/uc?id={_fid}", _dest, quiet=True
+                    )
+            except Exception as _e:
+                _erro_msg = str(_e)
+            if not _stl_valido(_dest):
+                try:
+                    if os.path.isfile(_dest):
+                        os.remove(_dest)
+                except Exception:
+                    pass
+                st.warning(
+                    f"Não foi possível baixar do Drive agora. "
+                    f"Detalhe: {_erro_msg[:200] or 'arquivo inválido ou incompleto'} "
+                    "— tente em alguns minutos ou use o upload manual."
+                )
+                _dest = None
+        if _dest and _stl_valido(_dest):
+            st.session_state["stl_paths"] = [_dest]
+            st.rerun()
+
 # Coletar STLs do upload — filtra apenas .stl, ignora outros formatos silenciosamente
 _stl_from_upload = []
 for _uf in (_uploads or []):
