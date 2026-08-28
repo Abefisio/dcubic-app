@@ -28,6 +28,10 @@ Thumbs.db
 # Exports temporários gerados pelo app
 exports/
 
+# Cache de malhas decimadas (gerado automaticamente pelo mesh_loader)
+*.dcubic_cache.ply
+*.dcubic_cache.json
+
 # Pytest / cobertura
 .pytest_cache/
 .coverage

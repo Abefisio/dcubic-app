@@ -226,15 +226,18 @@ def _load_stl_from_paths(path_mtime_pairs):
     Usa cache_resource (sem serialização) — objetos PolyData mantidos na
     memória entre reruns sem reconstrução. Chave: tupla de (caminho, mtime),
     então o cache invalida automaticamente se qualquer arquivo for modificado.
+    Passa cache_key = caminho sem extensão para ativar cache decimado em disco.
     """
     _files = []
+    _cache_keys = []
     for _p, _mt in path_mtime_pairs:
         try:
             with open(_p, "rb") as _fh:
                 _files.append((os.path.basename(_p), _fh.read()))
+                _cache_keys.append(os.path.splitext(_p)[0])
         except Exception:
             pass
-    return load_meshes(_files)
+    return load_meshes(_files, cache_keys=_cache_keys)
 
 
 @st.cache_data(hash_funcs={np.ndarray: _arr_hash}, show_spinner=False)
@@ -290,9 +293,15 @@ if _load_folder_btn:
     if not os.path.isdir(_folder_path):
         st.sidebar.warning(f"Pasta não encontrada: {_folder_path}")
     else:
-        _found = sorted(_glob.glob(os.path.join(_folder_path, "*.stl")))
+        _found = sorted(
+            p for p in _glob.glob(os.path.join(_folder_path, "*.stl"))
+            if ".dcubic_cache." not in os.path.basename(p)
+        )
         if not _found:
-            _found = sorted(_glob.glob(os.path.join(_folder_path, "*.STL")))
+            _found = sorted(
+                p for p in _glob.glob(os.path.join(_folder_path, "*.STL"))
+                if ".dcubic_cache." not in os.path.basename(p)
+            )
         if not _found:
             st.sidebar.warning(f"Nenhum arquivo .stl encontrado em: {_folder_path}")
         else:
