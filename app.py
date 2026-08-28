@@ -153,22 +153,6 @@ authenticator = stauth.Authenticate(
     _auth_config["cookie"]["expiry_days"],
 )
 
-# ---------------------------------------------------------------------------
-# Landing (tela inicial antes do login)
-# ---------------------------------------------------------------------------
-if "entered" not in st.session_state:
-    st.session_state["entered"] = False
-
-if not st.session_state["entered"] and not st.session_state.get("authentication_status"):
-    _dc_landing = _dc_read(os.path.join(_DC_ASSETS, "landing.html")).replace("__SRC__", _dc_molar_sources())
-    if _dc_landing:
-        _components.html(_dc_landing, height=560, scrolling=False)
-    _lc1, _lc2, _lc3 = st.columns([1, 1.4, 1])
-    with _lc2:
-        if st.button("🔬  Acessar o app", type="primary", use_container_width=True, key="dc_enter"):
-            st.session_state["entered"] = True
-            st.rerun()
-    st.stop()
 
 # Idle-timeout: força re-login após 30 min de inatividade
 _IDLE_MINUTES = 30
