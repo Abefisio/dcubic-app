@@ -103,22 +103,25 @@ def _dc_molar_sources():
 # ---------------------------------------------------------------------------
 _USERS_YAML = os.path.join(os.path.dirname(os.path.abspath(__file__)), "auth", "users.yaml")
 
+def _to_plain(_o):
+    if hasattr(_o, "items"):
+        return {_k: _to_plain(_v) for _k, _v in _o.items()}
+    if isinstance(_o, list):
+        return [_to_plain(_v) for _v in _o]
+    return _o
+
 if os.path.exists(_USERS_YAML):
     with open(_USERS_YAML, "r", encoding="utf-8") as _f:
         _auth_config = yaml.safe_load(_f)
 else:
-    # Streamlit Cloud: credenciais injetadas via st.secrets (objeto imutável).
-    # Convertido para dict comum (mutável), pois streamlit-authenticator
-    # modifica credentials["usernames"] internamente.
-    def _to_plain(_o):
-        if hasattr(_o, "items"):
-            return {_k: _to_plain(_v) for _k, _v in _o.items()}
-        if isinstance(_o, list):
-            return [_to_plain(_v) for _v in _o]
-        return _o
-    _raw_auth = st.secrets.get("auth", None)
+    # Streamlit Cloud: credenciais injetadas via st.secrets["auth"].
+    # st.secrets pode lançar FileNotFoundError se não houver secrets configurados.
+    try:
+        _raw_auth = st.secrets.get("auth", None)
+    except Exception:
+        _raw_auth = None
     if _raw_auth is None:
-        st.error("Configuração de autenticação não encontrada. Configure st.secrets['auth'].")
+        st.error("Configuração de autenticação não encontrada. Configure st.secrets['auth'] no painel do Streamlit Cloud.")
         st.stop()
     _auth_config = _to_plain(_raw_auth)
 
@@ -275,15 +278,21 @@ _uploads = st.sidebar.file_uploader(
 # usuário carrega da pasta local. Caminho paralelo ao pipeline de volume.
 # ---------------------------------------------------------------------------
 
-# Caminho A: leitura da pasta local (para arquivos grandes que excedem o
-# limite HTTP do Streamlit). Decisão consciente: este app roda localmente
-# com acesso restrito — revisar antes de publicar na nuvem.
-_stl_folder = st.sidebar.text_input(
-    "Pasta com STL (leitura local)",
-    value=os.path.expanduser("~/Desktop/DCUBIC-SITE/MICROTOMO"),
-    key="stl_folder_path",
-)
-_load_folder_btn = st.sidebar.button("Carregar STL da pasta", key="stl_load_folder")
+# Caminho A: leitura da pasta local — só disponível quando o diretório padrão existe.
+_LOCAL_DEFAULT = os.path.expanduser("~/Desktop/DCUBIC-SITE/MICROTOMO")
+_local_available = os.path.isdir(_LOCAL_DEFAULT)
+
+if _local_available:
+    _stl_folder = st.sidebar.text_input(
+        "Pasta com STL (leitura local)",
+        value=_LOCAL_DEFAULT,
+        key="stl_folder_path",
+    )
+    _load_folder_btn = st.sidebar.button("Carregar STL da pasta", key="stl_load_folder")
+else:
+    st.sidebar.info("Leitura de pasta local indisponível neste ambiente — use o upload de arquivos.")
+    _stl_folder = ""
+    _load_folder_btn = False
 
 # Coletar STLs do upload — filtra apenas .stl, ignora outros formatos silenciosamente
 _stl_from_upload = []
