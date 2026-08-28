@@ -169,6 +169,12 @@ if st.session_state.get("authentication_status"):
         st.session_state["_last_active"] = _now
 
 _dc_login_top = st.container()
+st.markdown(
+    "<style>"
+    "[data-testid='stForm']{max-width:30% !important;min-width:320px;margin-left:auto !important;margin-right:auto !important;}"
+    "</style>",
+    unsafe_allow_html=True,
+)
 authenticator.login(location="main")
 
 _auth_status = st.session_state.get("authentication_status")

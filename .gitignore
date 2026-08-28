@@ -1,5 +1,6 @@
 # Credenciais e secrets — NUNCA no repositório
 auth/users.yaml
+auth/hf_secret.local.json
 .env
 *.env
 secrets.toml
