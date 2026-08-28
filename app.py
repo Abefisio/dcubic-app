@@ -183,8 +183,12 @@ st.sidebar.caption(f"Logado como: {st.session_state.get('name', '')}")
 # ---------------------------------------------------------------------------
 # App principal
 # ---------------------------------------------------------------------------
-st.title("DCubic Image System Platform")
-st.caption("Análise de volumes 3D micro-CT · USP/FOUSP · Pesquisa acadêmica")
+st.markdown(
+    "<h3 style='margin:0;text-align:left'>DCubic Image System Platform</h3>"
+    "<p style='margin:0;color:#8a93a3;font-size:0.85rem'>"
+    "Análise de volumes 3D micro-CT · USP/FOUSP · Pesquisa acadêmica</p>",
+    unsafe_allow_html=True,
+)
 
 
 @st.cache_data(show_spinner=False)
@@ -415,6 +419,33 @@ if _is_stl:
     if _meshes_dict:
         _fig_stl = create_plotly_3d(
             _meshes_dict, _tissue_colors_stl, opacities=_opac_dict, clip_z_mm=None
+        )
+        _fig_stl.update_layout(
+            height=720,
+            margin=dict(l=0, r=0, t=0, b=0),
+            scene=dict(dragmode="orbit", aspectmode="data"),
+            updatemenus=[dict(
+                type="buttons",
+                direction="right",
+                x=0,
+                y=1.08,
+                showactive=False,
+                buttons=[
+                    dict(label="Topo",
+                         method="relayout",
+                         args=[{"scene.camera.eye": {"x": 0, "y": 0, "z": 2.2},
+                                "scene.camera.up":  {"x": 0, "y": 1, "z": 0}}]),
+                    dict(label="Frente",
+                         method="relayout",
+                         args=[{"scene.camera.eye": {"x": 0, "y": -2.2, "z": 0}}]),
+                    dict(label="Lado",
+                         method="relayout",
+                         args=[{"scene.camera.eye": {"x": 2.2, "y": 0, "z": 0}}]),
+                    dict(label="Perspectiva",
+                         method="relayout",
+                         args=[{"scene.camera.eye": {"x": 1.5, "y": 1.5, "z": 1.2}}]),
+                ],
+            )],
         )
         st.plotly_chart(_fig_stl, use_container_width=True)
     else:
