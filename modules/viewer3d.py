@@ -14,7 +14,6 @@ from __future__ import annotations
 import os
 os.environ.setdefault("PYVISTA_OFF_SCREEN", "true")
 import numpy as np
-import pyvista as pv
 import plotly.graph_objects as go
 from skimage.measure import marching_cubes
 
@@ -39,6 +38,7 @@ def build_mesh(
     if not mask.any():
         return None
 
+    import pyvista as pv
     verts, faces, normals, _ = marching_cubes(
         mask, level=0.5, spacing=spacing, step_size=step_size
     )
