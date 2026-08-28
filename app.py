@@ -184,13 +184,14 @@ st.sidebar.caption(f"Logado como: {st.session_state.get('name', '')}")
 # App principal
 # ---------------------------------------------------------------------------
 st.markdown(
-    "<style>.block-container{padding-top:1rem !important;}</style>",
+    "<style>"
+    ".block-container{padding-top:0rem !important;}"
+    "header[data-testid='stHeader']{height:0;}"
+    "</style>",
     unsafe_allow_html=True,
 )
 st.markdown(
-    "<h4 style='margin:0;text-align:left'>DCubic Image System Platform</h4>"
-    "<p style='margin:0;color:#8a93a3;font-size:0.85rem'>"
-    "Análise de volumes 3D micro-CT · USP/FOUSP · Pesquisa acadêmica</p>",
+    "<h4 style='margin:0;text-align:left'>DCubic Image System Platform</h4>",
     unsafe_allow_html=True,
 )
 
