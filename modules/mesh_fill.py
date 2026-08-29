@@ -73,7 +73,7 @@ def _inside_fallback(mesh_pv, resolucao: int, bounds) -> np.ndarray:
 
 # ── Função pública ────────────────────────────────────────────────────────────
 
-def preencher_interior(mesh_pv, resolucao: int = 48):
+def preencher_interior(mesh_pv, resolucao: int = 128):
     """
     Recebe uma malha pyvista (casca oca de STL) e retorna uma nova malha
     pyvista SÓLIDA preenchendo o volume interno fechado.
@@ -81,7 +81,7 @@ def preencher_interior(mesh_pv, resolucao: int = 48):
     Parâmetros
     ----------
     mesh_pv   : pv.PolyData — casca de entrada
-    resolucao : int — dimensão da grade voxel em cada eixo (padrão 48)
+    resolucao : int — dimensão da grade voxel em cada eixo (padrão 128)
 
     Retorna
     -------
@@ -154,9 +154,9 @@ if __name__ == "__main__":
     casca = pv.read(_stl_path)
     print(f"Pontos da casca: {casca.n_points}")
     print(f"Faces  da casca: {casca.n_cells}")
-    print("Rodando preencher_interior (resolucao=48)...")
+    print("Rodando preencher_interior (resolucao=128)...")
 
-    fill = preencher_interior(casca, resolucao=48)
+    fill = preencher_interior(casca, resolucao=128)
     if fill is None:
         print("RESULTADO: preenchimento VAZIO ou erro.")
     else:

@@ -511,7 +511,7 @@ if _is_stl:
             try:
                 from modules.mesh_fill import preencher_interior
                 _casca_pv = _stl_ok[0]["mesh"]
-                _interior = preencher_interior(_casca_pv, resolucao=48)
+                _interior = preencher_interior(_casca_pv, resolucao=128)
                 if _interior is not None:
                     import plotly.graph_objects as _go
                     _verts_i = _interior.points
