@@ -435,6 +435,8 @@ else:
 
 _is_stl = bool(_stl_path_mtime_dedup or _stl_upload_dedup)
 
+_revelar_interior = st.sidebar.checkbox("Revelar interior", value=False, key="revelar_interior")
+
 if _is_stl:
     _prog = st.progress(0, text="Preparando…")
 
@@ -504,6 +506,28 @@ if _is_stl:
         _fig_stl = create_plotly_3d(
             _meshes_dict, _tissue_colors_stl, opacities=_opac_dict, clip_z_mm=None
         )
+
+        if _revelar_interior and _stl_ok:
+            try:
+                from modules.mesh_fill import preencher_interior
+                _casca_pv = _stl_ok[0]["mesh"]
+                _interior = preencher_interior(_casca_pv, resolucao=48)
+                if _interior is not None:
+                    import plotly.graph_objects as _go
+                    _verts_i = _interior.points
+                    _faces_i = _interior.faces.reshape(-1, 4)[:, 1:]
+                    _fig_stl.add_trace(_go.Mesh3d(
+                        x=_verts_i[:, 0], y=_verts_i[:, 1], z=_verts_i[:, 2],
+                        i=_faces_i[:, 0], j=_faces_i[:, 1], k=_faces_i[:, 2],
+                        color="#7B2FBE", opacity=1.0,
+                        name="Interior",
+                        showlegend=False,
+                    ))
+            except ValueError as _ve:
+                st.warning("Não foi possível gerar o interior: " + str(_ve))
+            except Exception as _ie:
+                st.warning("Não foi possível gerar o interior: " + str(_ie))
+
         _fig_stl.update_layout(
             uirevision="constant",  # preserva câmera entre reruns do Streamlit
             modebar=dict(orientation="v"),
