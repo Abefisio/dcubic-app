@@ -5,15 +5,23 @@ Análise de volumes 3D micro-CT — USP/FOUSP — Pesquisa acadêmica
 
 import json
 import os
-import yaml
+import sys as _sys
+import traceback as _tb
+
 import streamlit as st
 import numpy as np
-import extra_streamlit_components as stx
 
-# Patch: extra-streamlit-components 0.1.81 cria um novo CookieManager (e
-# renderiza um componente iframe) a cada rerun, causando um loop infinito de
-# reruns que deixa a página em branco. O cache_resource garante que o componente
-# seja instanciado apenas uma vez por ciclo de vida do servidor.
+# ── bloco diagnóstico 1: yaml + extra-streamlit-components ──────────────────
+try:
+    import yaml
+    import extra_streamlit_components as stx
+except Exception as _e_stx:
+    st.error(
+        "**[DIAGNÓSTICO] Erro: yaml ou extra_streamlit_components:**\n\n"
+        f"```\n{_tb.format_exc()}\n```"
+    )
+    st.stop()
+
 # Patch IDEMPOTENTE do CookieManager.
 # O Streamlit re-executa o app.py a cada rerun, mas o modulo stx persiste na
 # memoria. Sem o guard abaixo, cada rerun re-empacotava o CookieManager,
@@ -25,7 +33,6 @@ import extra_streamlit_components as stx
 # stx.CookieManager embrulhado por patches antigos (recursao). Buscar do
 # submodulo ignora qualquer reatribuicao anterior e sempre embrulha a classe
 # real. A key fixa evita o loop de remontagem do widget de cookie.
-import sys as _sys
 _cm_submod = _sys.modules.get("extra_streamlit_components.CookieManager")
 _dcubic_original_cm = getattr(_cm_submod, "CookieManager", None) or stx.CookieManager
 
@@ -35,10 +42,9 @@ def _patched_cookie_manager(*args, **kwargs):
 
 stx.CookieManager = _patched_cookie_manager
 
-import streamlit_authenticator as stauth
-
+# ── bloco diagnóstico 2: autenticação + módulos DCubic ─────────────────────
 try:
-    import traceback as _tb
+    import streamlit_authenticator as stauth
     from modules.loader import load_volume
     from modules.viewer2d import render_triplanar, make_overlay_fig
     from modules.segmentation import segment_volume, TISSUE_PALETTE, DEFAULT_THRESHOLDS
