@@ -558,6 +558,26 @@ if _is_stl:
             f'</div>'
             for _vi, _vm in enumerate(_stl_ok)
         )
+        import json as _json
+        _base_colors_js = _json.dumps([
+            list(_tissue_colors_stl[_vm["name"]]) for _vm in _stl_ok
+        ])
+        _ext_def = next(
+            (_vi for _vi, _vm in enumerate(_stl_ok) if "esmalte" in _vm["name"].lower()), 0
+        )
+        _int_def = next(
+            (_vi for _vi, _vm in enumerate(_stl_ok)
+             if any(k in _vm["name"].lower() for k in ("raiz", "molar", "canal", "dentina"))),
+            len(_stl_ok) - 1,
+        )
+        _ext_opts = "".join(
+            f'<option value="{_vi}"{" selected" if _vi == _ext_def else ""}>{_vm["name"]}</option>'
+            for _vi, _vm in enumerate(_stl_ok)
+        )
+        _int_opts = "".join(
+            f'<option value="{_vi}"{" selected" if _vi == _int_def else ""}>{_vm["name"]}</option>'
+            for _vi, _vm in enumerate(_stl_ok)
+        )
         _ctrl_html = """
 <style>
 html,body{margin:0;padding:0;overflow:hidden;height:100%;background:#0f0f0f;color:#eee;font-family:sans-serif}
@@ -599,6 +619,14 @@ html,body{margin:0;padding:0;overflow:hidden;height:100%;background:#0f0f0f;colo
          font-weight:700;cursor:pointer;background:#2a2a2a;color:#ccc;
          margin-top:6px;transition:background .15s,color .15s}
 .act-btn:hover{background:#3a3a3a;color:#fff}
+#contrastToggle{width:100%;padding:6px 0;border:none;border-radius:4px;font-size:12px;
+               font-weight:700;cursor:pointer;background:#3a3a3a;color:#ccc;
+               margin-top:2px;transition:background .18s,color .18s}
+#contrastToggle.on{background:#4da6ff;color:#000;box-shadow:0 0 10px #4da6ffaa}
+.contrast-row{display:flex;align-items:center;gap:6px;margin-top:6px}
+.contrast-lbl{font-size:10px;color:#888;min-width:44px}
+.contrast-sel{flex:1;background:#2a2a2a;color:#ccc;border:1px solid #444;
+              border-radius:4px;font-size:11px;padding:2px 4px}
 </style>
 <div id="sidePanel">
   <p class="sec-label">CAMADAS</p>
@@ -623,6 +651,17 @@ html,body{margin:0;padding:0;overflow:hidden;height:100%;background:#0f0f0f;colo
   <p class="sec-label">ESTRUTURAS</p>
   __VIS__
 
+  <p class="sec-label">EFEITO DE CONTRASTE</p>
+  <button id="contrastToggle">Contraste OFF</button>
+  <div class="contrast-row">
+    <span class="contrast-lbl">Externa</span>
+    <select id="extSel" class="contrast-sel">__EXT_OPTS__</select>
+  </div>
+  <div class="contrast-row">
+    <span class="contrast-lbl">Interna</span>
+    <select id="intSel" class="contrast-sel">__INT_OPTS__</select>
+  </div>
+
   <p class="sec-label">VISTA</p>
   <button class="act-btn" id="resetViewBtn">&#x1F3E0; Resetar vista</button>
   <button class="act-btn" id="downloadBtn">&#x1F4F7; Baixar imagem</button>
@@ -630,6 +669,7 @@ html,body{margin:0;padding:0;overflow:hidden;height:100%;background:#0f0f0f;colo
 <button id="toggleBtn">&#x2039;</button>
 <script>
 (function(){
+  var baseColors=__BASE_COLORS_JSON__;
   var locked=false,savedCamera=null,lockApplying=false;
 
   function captureCamera(gd){
@@ -677,7 +717,9 @@ html,body{margin:0;padding:0;overflow:hidden;height:100%;background:#0f0f0f;colo
     var grayCtrl=document.getElementById('grayCtrl');
     var colorCtrl=document.getElementById('colorCtrl');
 
-    function applyColor(c){Plotly.restyle(gd,{color:c});}
+    function applyColor(c){
+      Plotly.restyle(gd,{color:c}).then(function(){if(contrastOn)applyContrast();});
+    }
 
     toneRange.addEventListener('input',function(){
       document.getElementById('toneVal').textContent=this.value;
@@ -745,6 +787,42 @@ html,body{margin:0;padding:0;overflow:hidden;height:100%;background:#0f0f0f;colo
         Plotly.relayout(gd,{'scene.dragmode':'orbit'});
       }
     });
+
+    // ---- Efeito de contraste ----
+    var contrastOn=false;
+    var contrastToggle=document.getElementById('contrastToggle');
+    var extSel=document.getElementById('extSel');
+    var intSel=document.getElementById('intSel');
+
+    function applyContrast(){
+      var extIdx=parseInt(extSel.value);
+      var intIdx=parseInt(intSel.value);
+      var extSlider=document.querySelector('.opacRangePer[data-idx="'+extIdx+'"]');
+      var opacExt=extSlider?extSlider.value/100:1;
+      var mult=0.25+0.75*opacExt;
+      var bc=baseColors[intIdx];
+      Plotly.restyle(gd,{color:'rgb('+Math.round(bc[0]*mult)+','+Math.round(bc[1]*mult)+','+Math.round(bc[2]*mult)+')'}, [intIdx]);
+    }
+
+    function restoreIntColor(){
+      var intIdx=parseInt(intSel.value);
+      var bc=baseColors[intIdx];
+      Plotly.restyle(gd,{color:'rgb('+bc[0]+','+bc[1]+','+bc[2]+')'}, [intIdx]);
+    }
+
+    contrastToggle.addEventListener('click',function(){
+      contrastOn=!contrastOn;
+      if(contrastOn){this.textContent='Contraste ON';this.classList.add('on');applyContrast();}
+      else{this.textContent='Contraste OFF';this.classList.remove('on');restoreIntColor();}
+    });
+    extSel.addEventListener('change',function(){if(contrastOn)applyContrast();});
+    intSel.addEventListener('change',function(){if(contrastOn)applyContrast();});
+
+    document.querySelectorAll('.opacRangePer').forEach(function(s){
+      s.addEventListener('input',function(){
+        if(contrastOn&&parseInt(this.dataset.idx)===parseInt(extSel.value))applyContrast();
+      });
+    });
   }
   setTimeout(init,400);
 })();
@@ -754,7 +832,12 @@ html,body{margin:0;padding:0;overflow:hidden;height:100%;background:#0f0f0f;colo
             "<meta charset='utf-8'>"
             "<meta name='viewport' content='width=device-width,initial-scale=1'>"
             "</head><body>"
-            + _ctrl_html.replace("__VIS__", _vis_html).replace("__OPAC__", _opac_html)
+            + _ctrl_html
+                .replace("__VIS__", _vis_html)
+                .replace("__OPAC__", _opac_html)
+                .replace("__EXT_OPTS__", _ext_opts)
+                .replace("__INT_OPTS__", _int_opts)
+                .replace("__BASE_COLORS_JSON__", _base_colors_js)
             + _plot_frag
             + "</body></html>"
         )
