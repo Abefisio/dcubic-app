@@ -368,6 +368,9 @@ if st.sidebar.button("Carregar dente de exemplo", key="drive_sample_btn"):
             _existing_paths = st.session_state.get("stl_paths", [])
             if _dest not in _existing_paths:
                 st.session_state["stl_paths"] = _existing_paths + [_dest]
+                _cur_sel = st.session_state.get("stl_selected_paths", list(_existing_paths))
+                if _dest not in _cur_sel:
+                    st.session_state["stl_selected_paths"] = list(_cur_sel) + [_dest]
             st.rerun()
 
 # Coletar STLs do upload — filtra apenas .stl, ignora outros formatos silenciosamente
@@ -400,10 +403,12 @@ if _load_folder_btn:
             st.sidebar.warning(f"Nenhum arquivo .stl encontrado em: {_folder_path}")
         else:
             st.session_state["stl_paths"] = _found
+            st.session_state["stl_selected_paths"] = _found
 
 if st.sidebar.button("Limpar STL", key="stl_clear"):
     st.session_state.pop("stl_paths", None)
-    st.session_state.pop("stl_selected_path", None)
+    st.session_state.pop("stl_selected_paths", None)
+    st.session_state.pop("_stl_last_set", None)
     st.session_state.pop("_stl_last", None)
     st.rerun()
 
@@ -558,10 +563,6 @@ if _is_stl:
             f'</div>'
             for _vi, _vm in enumerate(_stl_ok)
         )
-        import json as _json
-        _base_colors_js = _json.dumps([
-            list(_tissue_colors_stl[_vm["name"]]) for _vm in _stl_ok
-        ])
         _ext_def = next(
             (_vi for _vi, _vm in enumerate(_stl_ok) if "esmalte" in _vm["name"].lower()), 0
         )
@@ -619,10 +620,10 @@ html,body{margin:0;padding:0;overflow:hidden;height:100%;background:#0f0f0f;colo
          font-weight:700;cursor:pointer;background:#2a2a2a;color:#ccc;
          margin-top:6px;transition:background .15s,color .15s}
 .act-btn:hover{background:#3a3a3a;color:#fff}
-#contrastToggle{width:100%;padding:6px 0;border:none;border-radius:4px;font-size:12px;
-               font-weight:700;cursor:pointer;background:#3a3a3a;color:#ccc;
-               margin-top:2px;transition:background .18s,color .18s}
-#contrastToggle.on{background:#4da6ff;color:#000;box-shadow:0 0 10px #4da6ffaa}
+#rootFocusToggle{width:100%;padding:6px 0;border:none;border-radius:4px;font-size:12px;
+                font-weight:700;cursor:pointer;background:#3a3a3a;color:#ccc;
+                margin-top:2px;transition:background .18s,color .18s}
+#rootFocusToggle.on{background:#4da6ff;color:#000;box-shadow:0 0 10px #4da6ffaa}
 .contrast-row{display:flex;align-items:center;gap:6px;margin-top:6px}
 .contrast-lbl{font-size:10px;color:#888;min-width:44px}
 .contrast-sel{flex:1;background:#2a2a2a;color:#ccc;border:1px solid #444;
@@ -651,15 +652,21 @@ html,body{margin:0;padding:0;overflow:hidden;height:100%;background:#0f0f0f;colo
   <p class="sec-label">ESTRUTURAS</p>
   __VIS__
 
-  <p class="sec-label">EFEITO DE CONTRASTE</p>
-  <button id="contrastToggle">Contraste OFF</button>
+  <p class="sec-label">RAIZ EM DESTAQUE</p>
+  <button id="rootFocusToggle">Raiz OFF</button>
   <div class="contrast-row">
-    <span class="contrast-lbl">Externa</span>
-    <select id="extSel" class="contrast-sel">__EXT_OPTS__</select>
+    <span class="contrast-lbl">Contorno</span>
+    <select id="contourSel" class="contrast-sel">__EXT_OPTS__</select>
   </div>
   <div class="contrast-row">
-    <span class="contrast-lbl">Interna</span>
-    <select id="intSel" class="contrast-sel">__INT_OPTS__</select>
+    <span class="contrast-lbl">Sólida</span>
+    <select id="solidSel" class="contrast-sel">__INT_OPTS__</select>
+  </div>
+  <div class="contrast-row" style="margin-top:8px">
+    <span class="contrast-lbl">Contorno</span>
+    <input type="range" id="contourSlider" min="0" max="100" value="75"
+           style="flex:1;accent-color:#4da6ff;cursor:pointer">
+    <span id="contourVal" style="font-size:10px;color:#888;min-width:28px;text-align:right">75%</span>
   </div>
 
   <p class="sec-label">VISTA</p>
@@ -669,7 +676,6 @@ html,body{margin:0;padding:0;overflow:hidden;height:100%;background:#0f0f0f;colo
 <button id="toggleBtn">&#x2039;</button>
 <script>
 (function(){
-  var baseColors=__BASE_COLORS_JSON__;
   var locked=false,savedCamera=null,lockApplying=false;
 
   function captureCamera(gd){
@@ -717,9 +723,7 @@ html,body{margin:0;padding:0;overflow:hidden;height:100%;background:#0f0f0f;colo
     var grayCtrl=document.getElementById('grayCtrl');
     var colorCtrl=document.getElementById('colorCtrl');
 
-    function applyColor(c){
-      Plotly.restyle(gd,{color:c}).then(function(){if(contrastOn)applyContrast();});
-    }
+    function applyColor(c){Plotly.restyle(gd,{color:c});}
 
     toneRange.addEventListener('input',function(){
       document.getElementById('toneVal').textContent=this.value;
@@ -788,41 +792,45 @@ html,body{margin:0;padding:0;overflow:hidden;height:100%;background:#0f0f0f;colo
       }
     });
 
-    // ---- Efeito de contraste ----
-    var contrastOn=false;
-    var contrastToggle=document.getElementById('contrastToggle');
-    var extSel=document.getElementById('extSel');
-    var intSel=document.getElementById('intSel');
+    // ---- Raiz em destaque ----
+    var rootFocusOn=false;
+    var rootFocusToggle=document.getElementById('rootFocusToggle');
+    var contourSel=document.getElementById('contourSel');
+    var solidSel=document.getElementById('solidSel');
+    var contourSlider=document.getElementById('contourSlider');
+    var contourValEl=document.getElementById('contourVal');
 
-    function applyContrast(){
-      var extIdx=parseInt(extSel.value);
-      var intIdx=parseInt(intSel.value);
-      var extSlider=document.querySelector('.opacRangePer[data-idx="'+extIdx+'"]');
-      var opacExt=extSlider?extSlider.value/100:1;
-      var mult=0.25+0.75*opacExt;
-      var bc=baseColors[intIdx];
-      Plotly.restyle(gd,{color:'rgb('+Math.round(bc[0]*mult)+','+Math.round(bc[1]*mult)+','+Math.round(bc[2]*mult)+')'}, [intIdx]);
+    function contourOpac(){return parseInt(contourSlider.value)/100*0.20;}
+
+    function applyRootFocus(){
+      var cIdx=parseInt(contourSel.value);
+      var sIdx=parseInt(solidSel.value);
+      Plotly.restyle(gd,{opacity:contourOpac()},[cIdx]);
+      Plotly.restyle(gd,{opacity:1},[sIdx]);
     }
 
-    function restoreIntColor(){
-      var intIdx=parseInt(intSel.value);
-      var bc=baseColors[intIdx];
-      Plotly.restyle(gd,{color:'rgb('+bc[0]+','+bc[1]+','+bc[2]+')'}, [intIdx]);
+    function restoreRootFocus(){
+      var cIdx=parseInt(contourSel.value);
+      var sIdx=parseInt(solidSel.value);
+      var cSlider=document.querySelector('.opacRangePer[data-idx="'+cIdx+'"]');
+      var sSlider=document.querySelector('.opacRangePer[data-idx="'+sIdx+'"]');
+      Plotly.restyle(gd,{opacity:cSlider?cSlider.value/100:1},[cIdx]);
+      Plotly.restyle(gd,{opacity:sSlider?sSlider.value/100:1},[sIdx]);
     }
 
-    contrastToggle.addEventListener('click',function(){
-      contrastOn=!contrastOn;
-      if(contrastOn){this.textContent='Contraste ON';this.classList.add('on');applyContrast();}
-      else{this.textContent='Contraste OFF';this.classList.remove('on');restoreIntColor();}
+    rootFocusToggle.addEventListener('click',function(){
+      rootFocusOn=!rootFocusOn;
+      if(rootFocusOn){this.textContent='Raiz ON';this.classList.add('on');applyRootFocus();}
+      else{this.textContent='Raiz OFF';this.classList.remove('on');restoreRootFocus();}
     });
-    extSel.addEventListener('change',function(){if(contrastOn)applyContrast();});
-    intSel.addEventListener('change',function(){if(contrastOn)applyContrast();});
 
-    document.querySelectorAll('.opacRangePer').forEach(function(s){
-      s.addEventListener('input',function(){
-        if(contrastOn&&parseInt(this.dataset.idx)===parseInt(extSel.value))applyContrast();
-      });
+    contourSlider.addEventListener('input',function(){
+      contourValEl.textContent=this.value+'%';
+      if(rootFocusOn)applyRootFocus();
     });
+
+    contourSel.addEventListener('change',function(){if(rootFocusOn)applyRootFocus();});
+    solidSel.addEventListener('change',function(){if(rootFocusOn)applyRootFocus();});
   }
   setTimeout(init,400);
 })();
@@ -837,7 +845,6 @@ html,body{margin:0;padding:0;overflow:hidden;height:100%;background:#0f0f0f;colo
                 .replace("__OPAC__", _opac_html)
                 .replace("__EXT_OPTS__", _ext_opts)
                 .replace("__INT_OPTS__", _int_opts)
-                .replace("__BASE_COLORS_JSON__", _base_colors_js)
             + _plot_frag
             + "</body></html>"
         )
