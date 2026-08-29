@@ -243,21 +243,6 @@ def _load_uploaded_vol(files):
 _arr_hash = lambda a: (a.shape, a.dtype.str, float(a.sum()))
 
 
-def _extract_edges_stl(mesh):
-    """Extrai arestas únicas de malha triangulada — arrays X/Y/Z para go.Scatter3d."""
-    pts = mesh.points                           # (N,3): col0=Z, col1=Y, col2=X
-    fcs = mesh.faces.reshape(-1, 4)[:, 1:]     # (M,3): índices de vértice por triângulo
-    fi, fj, fk = fcs[:, 0], fcs[:, 1], fcs[:, 2]
-    e01 = np.sort(np.stack([fi, fj], axis=1), axis=1)
-    e12 = np.sort(np.stack([fj, fk], axis=1), axis=1)
-    e02 = np.sort(np.stack([fi, fk], axis=1), axis=1)
-    edges = np.unique(np.vstack([e01, e12, e02]), axis=0)
-    nan_col = np.full(len(edges), np.nan)
-    xs = np.stack([pts[edges[:, 0], 2], pts[edges[:, 1], 2], nan_col], axis=1).ravel()
-    ys = np.stack([pts[edges[:, 0], 1], pts[edges[:, 1], 1], nan_col], axis=1).ravel()
-    zs = np.stack([pts[edges[:, 0], 0], pts[edges[:, 1], 0], nan_col], axis=1).ravel()
-    return xs.tolist(), ys.tolist(), zs.tolist()
-
 
 @st.cache_resource
 def _load_stl_from_paths(path_mtime_pairs):
@@ -383,11 +368,7 @@ if st.sidebar.button("Carregar dente de exemplo", key="drive_sample_btn"):
         if _dest and _stl_valido(_dest):
             _existing_paths = st.session_state.get("stl_paths", [])
             if _dest not in _existing_paths:
-                _new_paths = _existing_paths + [_dest]
-                st.session_state["stl_paths"] = _new_paths
-                st.session_state["stl_selected_paths"] = list(dict.fromkeys(
-                    st.session_state.get("stl_selected_paths", []) + [_dest]
-                ))
+                st.session_state["stl_paths"] = _existing_paths + [_dest]
             st.rerun()
 
 # Coletar STLs do upload — filtra apenas .stl, ignora outros formatos silenciosamente
@@ -420,12 +401,11 @@ if _load_folder_btn:
             st.sidebar.warning(f"Nenhum arquivo .stl encontrado em: {_folder_path}")
         else:
             st.session_state["stl_paths"] = _found
-            st.session_state["stl_selected_paths"] = _found
+            st.session_state.pop("_stl_selected", None)
 
 if st.sidebar.button("Limpar STL", key="stl_clear"):
     st.session_state.pop("stl_paths", None)
-    st.session_state.pop("stl_selected_paths", None)
-    st.session_state.pop("_stl_last_set", None)
+    st.session_state.pop("_stl_selected", None)
     st.session_state.pop("_stl_last", None)
     st.rerun()
 
@@ -436,25 +416,22 @@ _stl_upload_dedup = []
 
 _opcoes = st.session_state.get("stl_paths", [])
 if _opcoes:
-    if "stl_selected_paths" not in st.session_state:
-        st.session_state["stl_selected_paths"] = _opcoes
-    _sel_multi = st.sidebar.multiselect(
-        "Estruturas a exibir",
+    _sel_path = st.sidebar.selectbox(
+        "Estrutura a exibir",
         options=_opcoes,
         format_func=lambda p: os.path.splitext(os.path.basename(p))[0],
-        key="stl_selected_paths",
+        key="_stl_selected",
     )
-    _sel_set = sorted(_sel_multi)
-    if _sel_set != sorted(st.session_state.get("_stl_last_set", [])):
+    if _sel_path != st.session_state.get("_stl_last"):
         _load_stl_from_paths.clear()
-        st.session_state["_stl_last_set"] = _sel_set
+        st.session_state["_stl_last"] = _sel_path
     _stl_path_mtime_dedup = [
-        (p, os.path.getmtime(p)) for p in _sel_multi if os.path.isfile(p)
-    ]
+        (_sel_path, os.path.getmtime(_sel_path))
+    ] if _sel_path and os.path.isfile(_sel_path) else []
 else:
-    # Upload: aceita todos os STL enviados
+    # Upload: usa o primeiro STL enviado
     if _stl_from_upload:
-        _stl_upload_dedup = _stl_from_upload
+        _stl_upload_dedup = _stl_from_upload[:1]
 
 _is_stl = bool(_stl_path_mtime_dedup or _stl_upload_dedup)
 
@@ -562,58 +539,11 @@ if _is_stl:
                 ],
             )],
         )
-        # Adiciona traces de wireframe (arestas) — inicialmente ocultos
-        import plotly.graph_objects as _go
-        _n_surface = len(_stl_ok)
-        for _vi, _vm in enumerate(_stl_ok):
-            _ex, _ey, _ez = _extract_edges_stl(_vm["mesh"])
-            _fig_stl.add_trace(_go.Scatter3d(
-                x=_ex, y=_ey, z=_ez,
-                mode="lines",
-                line=dict(color="rgba(210,210,210,0.7)", width=1),
-                name=f"{_vm['name']} (arestas)",
-                visible=False,
-                hoverinfo="skip",
-                showlegend=False,
-            ))
-
         # Render via iframe HTML: todos os controles em JS puro — sem rerun.
         import streamlit.components.v1 as _components
         _plot_frag = _fig_stl.to_html(
             include_plotlyjs="cdn", full_html=False, div_id="stl_plot",
             config={"displayModeBar": True},
-        )
-        _vis_html = "".join(
-            f'<label class="vis-chk"><input type="checkbox" class="visChk" data-idx="{_vi}" checked> {_vm["name"]}</label>'
-            for _vi, _vm in enumerate(_stl_ok)
-        )
-        _opac_html = "".join(
-            f'<div class="opac-per-row">'
-            f'<div class="opac-per-label"><span>{_vm["name"]}</span>'
-            f'<span id="opacVal{_vi}">100%</span></div>'
-            f'<input type="range" class="opacRangePer" data-idx="{_vi}"'
-            f' data-val-id="opacVal{_vi}" min="1" max="100" step="1" value="100">'
-            f'</div>'
-            for _vi, _vm in enumerate(_stl_ok)
-        )
-        _ext_def = next(
-            (_vi for _vi, _vm in enumerate(_stl_ok) if "esmalte" in _vm["name"].lower()), 0
-        )
-        _int_def = next(
-            (_vi for _vi, _vm in enumerate(_stl_ok)
-             if any(k in _vm["name"].lower() for k in ("raiz", "molar", "canal", "dentina"))),
-            len(_stl_ok) - 1,
-        )
-        if len(_stl_ok) > 1 and _ext_def == _int_def:
-            _int_def = (_ext_def + 1) % len(_stl_ok)
-        _raiz_disabled = "" if len(_stl_ok) >= 2 else " disabled title='Carregue ao menos 2 estruturas'"
-        _ext_opts = "".join(
-            f'<option value="{_vi}"{" selected" if _vi == _ext_def else ""}>{_vm["name"]}</option>'
-            for _vi, _vm in enumerate(_stl_ok)
-        )
-        _int_opts = "".join(
-            f'<option value="{_vi}"{" selected" if _vi == _int_def else ""}>{_vm["name"]}</option>'
-            for _vi, _vm in enumerate(_stl_ok)
         )
         _ctrl_html = """
 <style>
@@ -632,9 +562,9 @@ html,body{margin:0;padding:0;overflow:hidden;height:100%;background:#0f0f0f;colo
            text-transform:uppercase;margin:14px 0 6px;padding:0}
 .sec-label:first-child{margin-top:2px}
 .ends{font-size:10px;color:#555}
-.opac-per-row{margin-bottom:8px}
-.opac-per-label{font-size:10px;color:#888;display:flex;justify-content:space-between;margin-bottom:2px}
-.opacRangePer{width:100%;accent-color:#4da6ff;cursor:pointer}
+.tone-row{display:flex;align-items:center;gap:6px}
+#opacRange{flex:1;accent-color:#4da6ff;cursor:pointer}
+#opacVal{font-size:10px;color:#888;min-width:28px;text-align:right}
 #lockBtn{width:100%;padding:6px 0;border:none;border-radius:4px;font-size:13px;
          font-weight:700;cursor:pointer;background:#3a3a3a;color:#ccc;
          transition:background .18s,box-shadow .18s,color .18s;margin-top:6px}
@@ -644,37 +574,23 @@ html,body{margin:0;padding:0;overflow:hidden;height:100%;background:#0f0f0f;colo
           font-weight:700;cursor:pointer;background:#2a2a2a;color:#aaa;
           transition:background .15s,color .15s}
 .mode-btn.on{background:#555;color:#fff;border-color:#888}
-.tone-row{display:flex;align-items:center;gap:6px}
 #toneRange{flex:1;accent-color:#aaa;cursor:pointer}
 #toneVal{font-size:10px;color:#888;min-width:24px}
 #colorPick{width:100%;height:28px;border:none;border-radius:3px;cursor:pointer;padding:0}
-.vis-chk{font-size:11px;color:#aaa;display:flex;align-items:center;gap:6px;
-         cursor:pointer;margin-bottom:6px}
-.vis-chk input{accent-color:#4da6ff;cursor:pointer;width:14px;height:14px}
 .modebar-container{display:none!important}
 .act-btn{width:100%;padding:6px 0;border:none;border-radius:4px;font-size:12px;
          font-weight:700;cursor:pointer;background:#2a2a2a;color:#ccc;
          margin-top:6px;transition:background .15s,color .15s}
 .act-btn:hover{background:#3a3a3a;color:#fff}
-#rootFocusToggle{width:100%;padding:6px 0;border:none;border-radius:4px;font-size:12px;
-                font-weight:700;cursor:pointer;background:#3a3a3a;color:#ccc;
-                margin-top:2px;transition:background .18s,color .18s}
-#rootFocusToggle.on{background:#4da6ff;color:#000;box-shadow:0 0 10px #4da6ffaa}
-#glassToggle{width:100%;padding:6px 0;border:none;border-radius:4px;font-size:12px;
-             font-weight:700;cursor:pointer;background:#3a3a3a;color:#ccc;
-             margin-top:2px;transition:background .18s,color .18s}
-#glassToggle.on{background:#33cc88;color:#000;box-shadow:0 0 10px #33cc8899}
-.glass-color-row{display:flex;align-items:center;gap:6px;margin-top:6px}
-.glass-color-lbl{font-size:10px;color:#888;min-width:44px}
-#glassColor{flex:1;height:26px;border:none;border-radius:4px;cursor:pointer;padding:0}
-.contrast-row{display:flex;align-items:center;gap:6px;margin-top:6px}
-.contrast-lbl{font-size:10px;color:#888;min-width:44px}
-.contrast-sel{flex:1;background:#2a2a2a;color:#ccc;border:1px solid #444;
-              border-radius:4px;font-size:11px;padding:2px 4px}
 </style>
 <div id="sidePanel">
-  <p class="sec-label">CAMADAS</p>
-  __OPAC__
+  <p class="sec-label">OPACIDADE</p>
+  <div class="tone-row">
+    <span class="ends">0</span>
+    <input type="range" id="opacRange" min="1" max="100" step="1" value="100">
+    <span class="ends">100</span>
+    <span id="opacVal">100%</span>
+  </div>
   <button id="lockBtn">&#x1F512; LOCK</button>
 
   <p class="sec-label">COR</p>
@@ -692,47 +608,6 @@ html,body{margin:0;padding:0;overflow:hidden;height:100%;background:#0f0f0f;colo
     <input type="color" id="colorPick" value="#ebebeb">
   </div>
 
-  <p class="sec-label">ESTRUTURAS</p>
-  __VIS__
-
-  <p class="sec-label">RAIZ EM DESTAQUE</p>
-  <button id="rootFocusToggle"__RAIZ_DISABLED__>Raiz OFF</button>
-  <div class="contrast-row">
-    <span class="contrast-lbl">Contorno</span>
-    <select id="contourSel" class="contrast-sel">__EXT_OPTS__</select>
-  </div>
-  <div class="contrast-row">
-    <span class="contrast-lbl">Sólida</span>
-    <select id="solidSel" class="contrast-sel">__INT_OPTS__</select>
-  </div>
-  <div class="contrast-row" style="margin-top:8px">
-    <span class="contrast-lbl">Contorno</span>
-    <input type="range" id="contourSlider" min="0" max="100" value="75"
-           style="flex:1;accent-color:#4da6ff;cursor:pointer">
-    <span id="contourVal" style="font-size:10px;color:#888;min-width:28px;text-align:right">75%</span>
-  </div>
-
-  <p class="sec-label">MODO VIDRO</p>
-  <button id="glassToggle"__RAIZ_DISABLED__>Vidro OFF</button>
-  <div class="contrast-row">
-    <span class="contrast-lbl">Externa</span>
-    <select id="glassExtSel" class="contrast-sel">__EXT_OPTS__</select>
-  </div>
-  <div class="contrast-row">
-    <span class="contrast-lbl">Interna</span>
-    <select id="glassIntSel" class="contrast-sel">__INT_OPTS__</select>
-  </div>
-  <div class="contrast-row" style="margin-top:8px">
-    <span class="contrast-lbl">Transp.</span>
-    <input type="range" id="glassSlider" min="0" max="100" value="85"
-           style="flex:1;accent-color:#33cc88;cursor:pointer">
-    <span id="glassSliderVal" style="font-size:10px;color:#888;min-width:28px;text-align:right">85%</span>
-  </div>
-  <div class="glass-color-row">
-    <span class="glass-color-lbl">Cor interna</span>
-    <input type="color" id="glassColor" value="#3333cc">
-  </div>
-
   <p class="sec-label">VISTA</p>
   <button class="act-btn" id="resetViewBtn">&#x1F3E0; Resetar vista</button>
   <button class="act-btn" id="downloadBtn">&#x1F4F7; Baixar imagem</button>
@@ -740,7 +615,6 @@ html,body{margin:0;padding:0;overflow:hidden;height:100%;background:#0f0f0f;colo
 <button id="toggleBtn">&#x2039;</button>
 <script>
 (function(){
-  var nSurface=__N_SURFACE__;
   var locked=false,savedCamera=null,lockApplying=false;
 
   function captureCamera(gd){
@@ -772,12 +646,12 @@ html,body{margin:0;padding:0;overflow:hidden;height:100%;background:#0f0f0f;colo
       }
     });
 
-    // ---- Opacidade por estrutura ----
-    document.querySelectorAll('.opacRangePer').forEach(function(s){
-      s.addEventListener('input',function(){
-        document.getElementById(this.dataset.valId).textContent=this.value+'%';
-        Plotly.restyle(gd,{opacity:this.value/100},[parseInt(this.dataset.idx)]);
-      });
+    // ---- Opacidade única ----
+    var opacRange=document.getElementById('opacRange');
+    var opacVal=document.getElementById('opacVal');
+    opacRange.addEventListener('input',function(){
+      opacVal.textContent=this.value+'%';
+      Plotly.restyle(gd,{opacity:this.value/100});
     });
 
     // ---- Tom / Cor ----
@@ -808,13 +682,6 @@ html,body{margin:0;padding:0;overflow:hidden;height:100%;background:#0f0f0f;colo
       applyColor(colorPick.value);
     });
 
-    // ---- Visibilidade ----
-    document.querySelectorAll('.visChk').forEach(function(chk){
-      chk.addEventListener('change',function(){
-        Plotly.restyle(gd,{visible:this.checked},[parseInt(this.dataset.idx)]);
-      });
-    });
-
     // ---- LOCK ----
     gd.on('plotly_relayout',function(ev){
       if(lockApplying) return;
@@ -829,12 +696,10 @@ html,body{margin:0;padding:0;overflow:hidden;height:100%;background:#0f0f0f;colo
     // ---- Resetar vista ----
     var _defaultCam={eye:{x:1.5,y:1.5,z:1.2},up:{x:0,y:0,z:1},center:{x:0,y:0,z:0}};
     document.getElementById('resetViewBtn').addEventListener('click',function(){
-      // Desativa LOCK (idêntico ao lockBtn quando desliga)
       locked=false;
       var lb=document.getElementById('lockBtn');
       lb.textContent='🔓 LOCK';
       lb.classList.remove('on');
-      // Atualiza savedCamera para a câmera padrão — listener não reverterá
       savedCamera=JSON.parse(JSON.stringify(_defaultCam));
       Plotly.relayout(gd,{'scene.dragmode':'orbit','scene.camera':_defaultCam});
     });
@@ -856,117 +721,6 @@ html,body{margin:0;padding:0;overflow:hidden;height:100%;background:#0f0f0f;colo
         Plotly.relayout(gd,{'scene.dragmode':'orbit'});
       }
     });
-
-    // ---- Raiz em destaque ----
-    var rootFocusOn=false;
-    var rootFocusToggle=document.getElementById('rootFocusToggle');
-    var contourSel=document.getElementById('contourSel');
-    var solidSel=document.getElementById('solidSel');
-    var contourSlider=document.getElementById('contourSlider');
-    var contourValEl=document.getElementById('contourVal');
-
-    function contourOpac(){return parseInt(contourSlider.value)/100;}
-
-    function applyRootFocus(){
-      var cIdx=parseInt(contourSel.value);
-      var sIdx=parseInt(solidSel.value);
-      // Reset: restaura superfícies dos sliders, esconde todas as arestas
-      for(var _i=0;_i<nSurface;_i++){
-        var sl=document.querySelector('.opacRangePer[data-idx="'+_i+'"]');
-        Plotly.restyle(gd,{opacity:sl?sl.value/100:1},[_i]);
-        Plotly.restyle(gd,{visible:false},[nSurface+_i]);
-      }
-      // Contorno: superfície → opacidade 0; arestas → visíveis com slider
-      Plotly.restyle(gd,{opacity:0},[cIdx]);
-      Plotly.restyle(gd,{visible:true,opacity:contourOpac()},[nSurface+cIdx]);
-      // Sólida: superfície → opacidade total
-      Plotly.restyle(gd,{opacity:1},[sIdx]);
-    }
-
-    function restoreRootFocus(){
-      // Restaura superfícies dos sliders, esconde todas as arestas
-      for(var _i=0;_i<nSurface;_i++){
-        var sl=document.querySelector('.opacRangePer[data-idx="'+_i+'"]');
-        Plotly.restyle(gd,{opacity:sl?sl.value/100:1},[_i]);
-        Plotly.restyle(gd,{visible:false},[nSurface+_i]);
-      }
-    }
-
-    rootFocusToggle.addEventListener('click',function(){
-      rootFocusOn=!rootFocusOn;
-      if(rootFocusOn){
-        // exclusão mútua: desliga vidro se ativo
-        if(glassOn){glassOn=false;glassToggle.textContent='Vidro OFF';glassToggle.classList.remove('on');restoreGlass();}
-        this.textContent='Raiz ON';this.classList.add('on');applyRootFocus();
-      } else {
-        this.textContent='Raiz OFF';this.classList.remove('on');restoreRootFocus();
-      }
-    });
-
-    contourSlider.addEventListener('input',function(){
-      contourValEl.textContent=this.value+'%';
-      if(rootFocusOn) Plotly.restyle(gd,{opacity:contourOpac()},[nSurface+parseInt(contourSel.value)]);
-    });
-
-    contourSel.addEventListener('change',function(){if(rootFocusOn)applyRootFocus();});
-    solidSel.addEventListener('change',function(){if(rootFocusOn)applyRootFocus();});
-
-    // ---- MODO VIDRO ----
-    var glassOn=false;
-    var glassToggle=document.getElementById('glassToggle');
-    var glassExtSel=document.getElementById('glassExtSel');
-    var glassIntSel=document.getElementById('glassIntSel');
-    var glassSlider=document.getElementById('glassSlider');
-    var glassSliderVal=document.getElementById('glassSliderVal');
-    var glassColor=document.getElementById('glassColor');
-
-    function glassExtOpac(){return (100-parseInt(glassSlider.value))/100*0.25;}
-
-    function applyGlass(){
-      var eIdx=parseInt(glassExtSel.value);
-      var iIdx=parseInt(glassIntSel.value);
-      // Restaura todas as superfícies antes de aplicar
-      for(var _i=0;_i<nSurface;_i++){
-        var sl=document.querySelector('.opacRangePer[data-idx="'+_i+'"]');
-        Plotly.restyle(gd,{opacity:sl?sl.value/100:1},[_i]);
-      }
-      // Externa: translúcida esbranquiçada
-      Plotly.restyle(gd,{opacity:glassExtOpac(),color:'rgb(235,235,238)'},[eIdx]);
-      // Interna: sólida, cor escolhida
-      Plotly.restyle(gd,{opacity:1,color:glassColor.value},[iIdx]);
-    }
-
-    function restoreGlass(){
-      for(var _i=0;_i<nSurface;_i++){
-        var sl=document.querySelector('.opacRangePer[data-idx="'+_i+'"]');
-        Plotly.restyle(gd,{opacity:sl?sl.value/100:1},[_i]);
-      }
-      // Restaura cor base (cinza padrão do slider de tom)
-      var tv=document.getElementById('toneRange');
-      if(tv){var v=tv.value;Plotly.restyle(gd,{color:'rgb('+v+','+v+','+v+')'});}
-    }
-
-    if(glassToggle){
-      glassToggle.addEventListener('click',function(){
-        glassOn=!glassOn;
-        if(glassOn){
-          // exclusão mútua: desliga raiz se ativa
-          if(rootFocusOn){rootFocusOn=false;rootFocusToggle.textContent='Raiz OFF';rootFocusToggle.classList.remove('on');restoreRootFocus();}
-          this.textContent='Vidro ON';this.classList.add('on');applyGlass();
-        } else {
-          this.textContent='Vidro OFF';this.classList.remove('on');restoreGlass();
-        }
-      });
-      glassSlider.addEventListener('input',function(){
-        glassSliderVal.textContent=this.value+'%';
-        if(glassOn)Plotly.restyle(gd,{opacity:glassExtOpac()},[parseInt(glassExtSel.value)]);
-      });
-      glassExtSel.addEventListener('change',function(){if(glassOn)applyGlass();});
-      glassIntSel.addEventListener('change',function(){if(glassOn)applyGlass();});
-      glassColor.addEventListener('input',function(){
-        if(glassOn)Plotly.restyle(gd,{color:this.value},[parseInt(glassIntSel.value)]);
-      });
-    }
   }
   setTimeout(init,400);
 })();
@@ -977,12 +731,6 @@ html,body{margin:0;padding:0;overflow:hidden;height:100%;background:#0f0f0f;colo
             "<meta name='viewport' content='width=device-width,initial-scale=1'>"
             "</head><body>"
             + _ctrl_html
-                .replace("__VIS__", _vis_html)
-                .replace("__OPAC__", _opac_html)
-                .replace("__EXT_OPTS__", _ext_opts)
-                .replace("__INT_OPTS__", _int_opts)
-                .replace("__RAIZ_DISABLED__", _raiz_disabled)
-                .replace("__N_SURFACE__", str(_n_surface))
             + _plot_frag
             + "</body></html>"
         )
