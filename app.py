@@ -535,59 +535,74 @@ if _is_stl:
         )
         _ctrl_html = """
 <style>
-body{margin:0;background:#0f0f0f;color:#eee;font-family:sans-serif}
-#ctrl,#ctrl2,#ctrl3{display:flex;align-items:center;gap:8px;padding:4px 14px;
-      background:#1a1a1a;border-bottom:1px solid #2a2a2a;flex-wrap:wrap}
-#ctrl label,#ctrl2 label,#ctrl3 label{font-size:11px;font-weight:700;letter-spacing:.08em;color:#999;text-transform:uppercase}
-.ends{font-size:11px;color:#666}
-#opacRange{flex:1;min-width:120px;max-width:280px;accent-color:#4da6ff;cursor:pointer}
-#opacVal{font-size:12px;color:#aaa;min-width:38px;text-align:right}
-#lockBtn{padding:5px 18px;border:none;border-radius:4px;font-size:13px;font-weight:700;
-         cursor:pointer;background:#3a3a3a;color:#ccc;box-shadow:none;
-         transition:background .18s,box-shadow .18s,color .18s}
-#lockBtn.on{background:#4da6ff;color:#000;box-shadow:0 0 12px #4da6ffaa}
-.mode-btn{padding:3px 12px;border:1px solid #444;border-radius:4px;font-size:11px;
+html,body{margin:0;padding:0;overflow:hidden;height:100%;background:#0f0f0f;color:#eee;font-family:sans-serif}
+#sidePanel{position:fixed;left:0;top:0;height:100%;width:260px;z-index:10;
+           background:rgba(18,18,18,0.95);border-right:1px solid #2a2a2a;
+           transition:transform .25s ease;overflow-y:auto;box-sizing:border-box;
+           padding:10px 14px 24px}
+#sidePanel.hidden{transform:translateX(-260px)}
+#toggleBtn{position:fixed;left:260px;top:50%;transform:translateY(-50%);z-index:11;
+           width:22px;height:52px;border:none;border-radius:0 6px 6px 0;
+           background:#2a2a2a;color:#aaa;font-size:16px;cursor:pointer;
+           transition:left .25s ease;padding:0;line-height:1}
+#toggleBtn.closed{left:0}
+.sec-label{font-size:10px;font-weight:700;letter-spacing:.08em;color:#666;
+           text-transform:uppercase;margin:14px 0 6px;padding:0}
+.sec-label:first-child{margin-top:2px}
+.opac-row{display:flex;align-items:center;gap:6px;margin-bottom:4px}
+.ends{font-size:10px;color:#555}
+#opacRange{flex:1;accent-color:#4da6ff;cursor:pointer}
+#opacVal{font-size:11px;color:#aaa;min-width:34px;text-align:right}
+#lockBtn{width:100%;padding:6px 0;border:none;border-radius:4px;font-size:13px;
+         font-weight:700;cursor:pointer;background:#3a3a3a;color:#ccc;
+         transition:background .18s,box-shadow .18s,color .18s;margin-top:6px}
+#lockBtn.on{background:#4da6ff;color:#000;box-shadow:0 0 10px #4da6ffaa}
+.mode-row{display:flex;gap:6px;margin-bottom:8px}
+.mode-btn{flex:1;padding:4px 0;border:1px solid #444;border-radius:4px;font-size:11px;
           font-weight:700;cursor:pointer;background:#2a2a2a;color:#aaa;
           transition:background .15s,color .15s}
 .mode-btn.on{background:#555;color:#fff;border-color:#888}
-#toneRange{flex:1;min-width:100px;max-width:220px;accent-color:#aaa;cursor:pointer}
-#toneVal{font-size:11px;color:#aaa;min-width:28px}
-#colorPick{width:32px;height:22px;border:none;border-radius:3px;cursor:pointer;padding:0}
-.vis-chk{font-size:11px;color:#aaa;display:flex;align-items:center;gap:4px;cursor:pointer}
-.vis-chk input{accent-color:#4da6ff;cursor:pointer}
-.modebar-container{left:8px!important;right:auto!important;top:8px!important}
+.tone-row{display:flex;align-items:center;gap:6px}
+#toneRange{flex:1;accent-color:#aaa;cursor:pointer}
+#toneVal{font-size:10px;color:#888;min-width:24px}
+#colorPick{width:100%;height:28px;border:none;border-radius:3px;cursor:pointer;padding:0}
+.vis-chk{font-size:11px;color:#aaa;display:flex;align-items:center;gap:6px;
+         cursor:pointer;margin-bottom:6px}
+.vis-chk input{accent-color:#4da6ff;cursor:pointer;width:14px;height:14px}
 .modebar{opacity:1!important;background:rgba(30,30,30,0.7)!important;
          border-radius:4px;padding:4px 2px}
-.modebar-btn{margin:5px 0!important;display:block!important}
 .modebar-btn svg{transform:scale(1.6);transform-origin:center}
 .modebar-btn path{fill:#ddd!important}
 .modebar-btn:hover path{fill:#fff!important}
 </style>
-<div id="ctrl">
-  <label>CAMADAS</label>
-  <span class="ends">Transparente</span>
-  <input type="range" id="opacRange" min="1" max="100" step="1" value="100">
-  <span class="ends">Sólido</span>
-  <span id="opacVal">100%</span>
+<div id="sidePanel">
+  <p class="sec-label">CAMADAS</p>
+  <div class="opac-row">
+    <span class="ends">Transparente</span>
+    <input type="range" id="opacRange" min="1" max="100" step="1" value="100">
+    <span id="opacVal">100%</span>
+  </div>
   <button id="lockBtn">&#x1F512; LOCK</button>
-</div>
-<div id="ctrl2">
-  <label>COR</label>
-  <button class="mode-btn on" id="modeGray">Cinza</button>
-  <button class="mode-btn" id="modeColor">Cor personalizada</button>
-  <span id="grayCtrl" style="display:flex;align-items:center;gap:8px;flex:1">
+
+  <p class="sec-label">COR</p>
+  <div class="mode-row">
+    <button class="mode-btn on" id="modeGray">Cinza</button>
+    <button class="mode-btn" id="modeColor">Cor personalizada</button>
+  </div>
+  <div id="grayCtrl" class="tone-row">
     <span class="ends">Escuro</span>
     <input type="range" id="toneRange" min="0" max="255" step="1" value="235">
     <span class="ends">Claro</span>
     <span id="toneVal">235</span>
-  </span>
-  <span id="colorCtrl" style="display:none;align-items:center;gap:8px">
+  </div>
+  <div id="colorCtrl" style="display:none">
     <input type="color" id="colorPick" value="#ebebeb">
-  </span>
+  </div>
+
+  <p class="sec-label">ESTRUTURAS</p>
+  __VIS__
 </div>
-<div id="ctrl3">
-  <label>ESTRUTURAS</label>__VIS__
-</div>
+<button id="toggleBtn">&#x2039;</button>
 <script>
 (function(){
   var locked=false,savedCamera=null,lockApplying=false;
@@ -603,6 +618,23 @@ body{margin:0;background:#0f0f0f;color:#eee;font-family:sans-serif}
   function init(){
     var gd=document.getElementById('stl_plot');
     if(!gd||!gd._fullLayout){setTimeout(init,250);return;}
+
+    // ---- Toggle painel ----
+    var panel=document.getElementById('sidePanel');
+    var toggleBtn=document.getElementById('toggleBtn');
+    var panelOpen=true;
+    toggleBtn.addEventListener('click',function(){
+      panelOpen=!panelOpen;
+      if(panelOpen){
+        panel.classList.remove('hidden');
+        toggleBtn.innerHTML='&#x2039;';
+        toggleBtn.classList.remove('closed');
+      } else {
+        panel.classList.add('hidden');
+        toggleBtn.innerHTML='&#x203a;';
+        toggleBtn.classList.add('closed');
+      }
+    });
 
     // ---- Opacidade ----
     var range=document.getElementById('opacRange');
@@ -636,7 +668,7 @@ body{margin:0;background:#0f0f0f;color:#eee;font-family:sans-serif}
     });
     modeColor.addEventListener('click',function(){
       modeColor.classList.add('on');modeGray.classList.remove('on');
-      colorCtrl.style.display='flex';grayCtrl.style.display='none';
+      colorCtrl.style.display='block';grayCtrl.style.display='none';
       applyColor(colorPick.value);
     });
 
