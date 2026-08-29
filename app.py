@@ -478,9 +478,10 @@ if _is_stl:
     if st.sidebar.button("Sólido", key="stl_preset_solid"):
         st.session_state["stl_opacity"] = 1.0
     _opacity = st.sidebar.slider(
-        "Opacidade (sólido → transparente)", 0.05, 1.0,
+        "Opacidade", 0.05, 1.0,
         st.session_state.get("stl_opacity", 1.0), 0.05, key="stl_opacity",
     )
+    st.sidebar.caption("⬅ Transparente · Sólido ➡")
     _appearance = st.sidebar.radio(
         "Aparência", ["Cinza (tom ajustável)", "Cor personalizada"],
         key="stl_appearance",
@@ -542,7 +543,7 @@ if _is_stl:
                 ],
             )],
         )
-        st.plotly_chart(_fig_stl, use_container_width=True)
+        st.plotly_chart(_fig_stl, use_container_width=True, key="stl_plotly_3d")
     else:
         st.info("Ative ao menos uma estrutura na barra lateral para visualizar.")
 
@@ -636,7 +637,7 @@ for _tn in tissue_names:
     )
 TISSUE_PALETTE = _PALETTE
 
-tab_2d, tab_seg, tab_3d, tab_anat, tab_met = st.tabs(["📐 Triplanar", "🔍 Segmentação", "🫙 Render 3D", "🦷 Anatomia", "📊 Métricas & Export"])
+tab_3d, tab_seg, tab_2d, tab_anat, tab_met = st.tabs(["🫙 Render 3D", "🔍 Segmentação", "📐 Triplanar", "🦷 Anatomia", "📊 Métricas & Export"])
 
 # ---------------------------------------------------------------------------
 # Aba 1 — Visualização 2D triplanar
