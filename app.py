@@ -365,7 +365,9 @@ if st.sidebar.button("Carregar dente de exemplo", key="drive_sample_btn"):
                 )
                 _dest = None
         if _dest and _stl_valido(_dest):
-            st.session_state["stl_paths"] = [_dest]
+            _existing_paths = st.session_state.get("stl_paths", [])
+            if _dest not in _existing_paths:
+                st.session_state["stl_paths"] = _existing_paths + [_dest]
             st.rerun()
 
 # Coletar STLs do upload — filtra apenas .stl, ignora outros formatos silenciosamente
@@ -412,22 +414,24 @@ _stl_upload_dedup = []
 
 _opcoes = st.session_state.get("stl_paths", [])
 if _opcoes:
-    _sel = st.sidebar.radio(
-        "Estrutura a exibir (uma por vez)",
+    _sel_multi = st.sidebar.multiselect(
+        "Estruturas a exibir",
         options=_opcoes,
+        default=_opcoes,
         format_func=lambda p: os.path.splitext(os.path.basename(p))[0],
-        key="stl_selected_path",
+        key="stl_selected_paths",
     )
-    # Limpar cache se a seleção mudou desde o último rerun
-    if _sel != st.session_state.get("_stl_last"):
+    _sel_set = sorted(_sel_multi)
+    if _sel_set != sorted(st.session_state.get("_stl_last_set", [])):
         _load_stl_from_paths.clear()
-        st.session_state["_stl_last"] = _sel
-    if _sel and os.path.isfile(_sel):
-        _stl_path_mtime_dedup = [(_sel, os.path.getmtime(_sel))]
+        st.session_state["_stl_last_set"] = _sel_set
+    _stl_path_mtime_dedup = [
+        (p, os.path.getmtime(p)) for p in _sel_multi if os.path.isfile(p)
+    ]
 else:
-    # Sem pasta carregada: aceita apenas o primeiro .stl do upload
+    # Upload: aceita todos os STL enviados
     if _stl_from_upload:
-        _stl_upload_dedup = [_stl_from_upload[0]]
+        _stl_upload_dedup = _stl_from_upload
 
 _is_stl = bool(_stl_path_mtime_dedup or _stl_upload_dedup)
 
@@ -473,13 +477,25 @@ if _is_stl:
         st.error("Nenhuma malha STL válida foi carregada.")
         st.stop()
 
-    # Aparência e visibilidade migradas para client-side (HTML abaixo).
-    _COL_INIT = (235, 235, 235)  # tom inicial — ajustável no slider HTML
+    # Cores iniciais por estrutura (match no nome, case-insensitive); fallback por índice.
+    _STL_COLOR_MAP = {
+        "esmalte": (230, 235, 240),
+        "dentina": (220, 200, 150),
+        "molar":   (200, 170, 140),
+        "raiz":    (200, 170, 140),
+        "canal":   (180, 120, 100),
+    }
+    _PALETTE = [
+        (230, 235, 240), (220, 200, 150), (200, 170, 140),
+        (170, 200, 220), (220, 170, 200), (170, 220, 190),
+    ]
     _meshes_dict = {}
     _tissue_colors_stl = {}
     _opac_dict = {}
-    for _mi in _stl_ok:
-        _tissue_colors_stl[_mi["name"]] = _COL_INIT
+    for _vi, _mi in enumerate(_stl_ok):
+        _nl = _mi["name"].lower()
+        _col = next((v for k, v in _STL_COLOR_MAP.items() if k in _nl), _PALETTE[_vi % len(_PALETTE)])
+        _tissue_colors_stl[_mi["name"]] = _col
         _meshes_dict[_mi["name"]] = _mi["mesh"]
         _opac_dict[_mi["name"]] = 1.0
 
