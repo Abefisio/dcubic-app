@@ -243,6 +243,22 @@ def _load_uploaded_vol(files):
 _arr_hash = lambda a: (a.shape, a.dtype.str, float(a.sum()))
 
 
+def _extract_edges_stl(mesh):
+    """Extrai arestas únicas de malha triangulada — arrays X/Y/Z para go.Scatter3d."""
+    pts = mesh.points                           # (N,3): col0=Z, col1=Y, col2=X
+    fcs = mesh.faces.reshape(-1, 4)[:, 1:]     # (M,3): índices de vértice por triângulo
+    fi, fj, fk = fcs[:, 0], fcs[:, 1], fcs[:, 2]
+    e01 = np.sort(np.stack([fi, fj], axis=1), axis=1)
+    e12 = np.sort(np.stack([fj, fk], axis=1), axis=1)
+    e02 = np.sort(np.stack([fi, fk], axis=1), axis=1)
+    edges = np.unique(np.vstack([e01, e12, e02]), axis=0)
+    nan_col = np.full(len(edges), np.nan)
+    xs = np.stack([pts[edges[:, 0], 2], pts[edges[:, 1], 2], nan_col], axis=1).ravel()
+    ys = np.stack([pts[edges[:, 0], 1], pts[edges[:, 1], 1], nan_col], axis=1).ravel()
+    zs = np.stack([pts[edges[:, 0], 0], pts[edges[:, 1], 0], nan_col], axis=1).ravel()
+    return xs.tolist(), ys.tolist(), zs.tolist()
+
+
 @st.cache_resource
 def _load_stl_from_paths(path_mtime_pairs):
     """Carrega e decima STLs a partir de caminhos de disco.
@@ -367,10 +383,11 @@ if st.sidebar.button("Carregar dente de exemplo", key="drive_sample_btn"):
         if _dest and _stl_valido(_dest):
             _existing_paths = st.session_state.get("stl_paths", [])
             if _dest not in _existing_paths:
-                st.session_state["stl_paths"] = _existing_paths + [_dest]
-                _cur_sel = st.session_state.get("stl_selected_paths", list(_existing_paths))
-                if _dest not in _cur_sel:
-                    st.session_state["stl_selected_paths"] = list(_cur_sel) + [_dest]
+                _new_paths = _existing_paths + [_dest]
+                st.session_state["stl_paths"] = _new_paths
+                st.session_state["stl_selected_paths"] = list(dict.fromkeys(
+                    st.session_state.get("stl_selected_paths", []) + [_dest]
+                ))
             st.rerun()
 
 # Coletar STLs do upload — filtra apenas .stl, ignora outros formatos silenciosamente
@@ -419,10 +436,11 @@ _stl_upload_dedup = []
 
 _opcoes = st.session_state.get("stl_paths", [])
 if _opcoes:
+    if "stl_selected_paths" not in st.session_state:
+        st.session_state["stl_selected_paths"] = _opcoes
     _sel_multi = st.sidebar.multiselect(
         "Estruturas a exibir",
         options=_opcoes,
-        default=_opcoes,
         format_func=lambda p: os.path.splitext(os.path.basename(p))[0],
         key="stl_selected_paths",
     )
@@ -544,6 +562,21 @@ if _is_stl:
                 ],
             )],
         )
+        # Adiciona traces de wireframe (arestas) — inicialmente ocultos
+        import plotly.graph_objects as _go
+        _n_surface = len(_stl_ok)
+        for _vi, _vm in enumerate(_stl_ok):
+            _ex, _ey, _ez = _extract_edges_stl(_vm["mesh"])
+            _fig_stl.add_trace(_go.Scatter3d(
+                x=_ex, y=_ey, z=_ez,
+                mode="lines",
+                line=dict(color="rgba(210,210,210,0.7)", width=1),
+                name=f"{_vm['name']} (arestas)",
+                visible=False,
+                hoverinfo="skip",
+                showlegend=False,
+            ))
+
         # Render via iframe HTML: todos os controles em JS puro — sem rerun.
         import streamlit.components.v1 as _components
         _plot_frag = _fig_stl.to_html(
@@ -571,6 +604,9 @@ if _is_stl:
              if any(k in _vm["name"].lower() for k in ("raiz", "molar", "canal", "dentina"))),
             len(_stl_ok) - 1,
         )
+        if len(_stl_ok) > 1 and _ext_def == _int_def:
+            _int_def = (_ext_def + 1) % len(_stl_ok)
+        _raiz_disabled = "" if len(_stl_ok) >= 2 else " disabled title='Carregue ao menos 2 estruturas'"
         _ext_opts = "".join(
             f'<option value="{_vi}"{" selected" if _vi == _ext_def else ""}>{_vm["name"]}</option>'
             for _vi, _vm in enumerate(_stl_ok)
@@ -624,6 +660,13 @@ html,body{margin:0;padding:0;overflow:hidden;height:100%;background:#0f0f0f;colo
                 font-weight:700;cursor:pointer;background:#3a3a3a;color:#ccc;
                 margin-top:2px;transition:background .18s,color .18s}
 #rootFocusToggle.on{background:#4da6ff;color:#000;box-shadow:0 0 10px #4da6ffaa}
+#glassToggle{width:100%;padding:6px 0;border:none;border-radius:4px;font-size:12px;
+             font-weight:700;cursor:pointer;background:#3a3a3a;color:#ccc;
+             margin-top:2px;transition:background .18s,color .18s}
+#glassToggle.on{background:#33cc88;color:#000;box-shadow:0 0 10px #33cc8899}
+.glass-color-row{display:flex;align-items:center;gap:6px;margin-top:6px}
+.glass-color-lbl{font-size:10px;color:#888;min-width:44px}
+#glassColor{flex:1;height:26px;border:none;border-radius:4px;cursor:pointer;padding:0}
 .contrast-row{display:flex;align-items:center;gap:6px;margin-top:6px}
 .contrast-lbl{font-size:10px;color:#888;min-width:44px}
 .contrast-sel{flex:1;background:#2a2a2a;color:#ccc;border:1px solid #444;
@@ -653,7 +696,7 @@ html,body{margin:0;padding:0;overflow:hidden;height:100%;background:#0f0f0f;colo
   __VIS__
 
   <p class="sec-label">RAIZ EM DESTAQUE</p>
-  <button id="rootFocusToggle">Raiz OFF</button>
+  <button id="rootFocusToggle"__RAIZ_DISABLED__>Raiz OFF</button>
   <div class="contrast-row">
     <span class="contrast-lbl">Contorno</span>
     <select id="contourSel" class="contrast-sel">__EXT_OPTS__</select>
@@ -669,6 +712,27 @@ html,body{margin:0;padding:0;overflow:hidden;height:100%;background:#0f0f0f;colo
     <span id="contourVal" style="font-size:10px;color:#888;min-width:28px;text-align:right">75%</span>
   </div>
 
+  <p class="sec-label">MODO VIDRO</p>
+  <button id="glassToggle"__RAIZ_DISABLED__>Vidro OFF</button>
+  <div class="contrast-row">
+    <span class="contrast-lbl">Externa</span>
+    <select id="glassExtSel" class="contrast-sel">__EXT_OPTS__</select>
+  </div>
+  <div class="contrast-row">
+    <span class="contrast-lbl">Interna</span>
+    <select id="glassIntSel" class="contrast-sel">__INT_OPTS__</select>
+  </div>
+  <div class="contrast-row" style="margin-top:8px">
+    <span class="contrast-lbl">Transp.</span>
+    <input type="range" id="glassSlider" min="0" max="100" value="85"
+           style="flex:1;accent-color:#33cc88;cursor:pointer">
+    <span id="glassSliderVal" style="font-size:10px;color:#888;min-width:28px;text-align:right">85%</span>
+  </div>
+  <div class="glass-color-row">
+    <span class="glass-color-lbl">Cor interna</span>
+    <input type="color" id="glassColor" value="#3333cc">
+  </div>
+
   <p class="sec-label">VISTA</p>
   <button class="act-btn" id="resetViewBtn">&#x1F3E0; Resetar vista</button>
   <button class="act-btn" id="downloadBtn">&#x1F4F7; Baixar imagem</button>
@@ -676,6 +740,7 @@ html,body{margin:0;padding:0;overflow:hidden;height:100%;background:#0f0f0f;colo
 <button id="toggleBtn">&#x2039;</button>
 <script>
 (function(){
+  var nSurface=__N_SURFACE__;
   var locked=false,savedCamera=null,lockApplying=false;
 
   function captureCamera(gd){
@@ -800,37 +865,108 @@ html,body{margin:0;padding:0;overflow:hidden;height:100%;background:#0f0f0f;colo
     var contourSlider=document.getElementById('contourSlider');
     var contourValEl=document.getElementById('contourVal');
 
-    function contourOpac(){return parseInt(contourSlider.value)/100*0.20;}
+    function contourOpac(){return parseInt(contourSlider.value)/100;}
 
     function applyRootFocus(){
       var cIdx=parseInt(contourSel.value);
       var sIdx=parseInt(solidSel.value);
-      Plotly.restyle(gd,{opacity:contourOpac()},[cIdx]);
+      // Reset: restaura superfícies dos sliders, esconde todas as arestas
+      for(var _i=0;_i<nSurface;_i++){
+        var sl=document.querySelector('.opacRangePer[data-idx="'+_i+'"]');
+        Plotly.restyle(gd,{opacity:sl?sl.value/100:1},[_i]);
+        Plotly.restyle(gd,{visible:false},[nSurface+_i]);
+      }
+      // Contorno: superfície → opacidade 0; arestas → visíveis com slider
+      Plotly.restyle(gd,{opacity:0},[cIdx]);
+      Plotly.restyle(gd,{visible:true,opacity:contourOpac()},[nSurface+cIdx]);
+      // Sólida: superfície → opacidade total
       Plotly.restyle(gd,{opacity:1},[sIdx]);
     }
 
     function restoreRootFocus(){
-      var cIdx=parseInt(contourSel.value);
-      var sIdx=parseInt(solidSel.value);
-      var cSlider=document.querySelector('.opacRangePer[data-idx="'+cIdx+'"]');
-      var sSlider=document.querySelector('.opacRangePer[data-idx="'+sIdx+'"]');
-      Plotly.restyle(gd,{opacity:cSlider?cSlider.value/100:1},[cIdx]);
-      Plotly.restyle(gd,{opacity:sSlider?sSlider.value/100:1},[sIdx]);
+      // Restaura superfícies dos sliders, esconde todas as arestas
+      for(var _i=0;_i<nSurface;_i++){
+        var sl=document.querySelector('.opacRangePer[data-idx="'+_i+'"]');
+        Plotly.restyle(gd,{opacity:sl?sl.value/100:1},[_i]);
+        Plotly.restyle(gd,{visible:false},[nSurface+_i]);
+      }
     }
 
     rootFocusToggle.addEventListener('click',function(){
       rootFocusOn=!rootFocusOn;
-      if(rootFocusOn){this.textContent='Raiz ON';this.classList.add('on');applyRootFocus();}
-      else{this.textContent='Raiz OFF';this.classList.remove('on');restoreRootFocus();}
+      if(rootFocusOn){
+        // exclusão mútua: desliga vidro se ativo
+        if(glassOn){glassOn=false;glassToggle.textContent='Vidro OFF';glassToggle.classList.remove('on');restoreGlass();}
+        this.textContent='Raiz ON';this.classList.add('on');applyRootFocus();
+      } else {
+        this.textContent='Raiz OFF';this.classList.remove('on');restoreRootFocus();
+      }
     });
 
     contourSlider.addEventListener('input',function(){
       contourValEl.textContent=this.value+'%';
-      if(rootFocusOn)applyRootFocus();
+      if(rootFocusOn) Plotly.restyle(gd,{opacity:contourOpac()},[nSurface+parseInt(contourSel.value)]);
     });
 
     contourSel.addEventListener('change',function(){if(rootFocusOn)applyRootFocus();});
     solidSel.addEventListener('change',function(){if(rootFocusOn)applyRootFocus();});
+
+    // ---- MODO VIDRO ----
+    var glassOn=false;
+    var glassToggle=document.getElementById('glassToggle');
+    var glassExtSel=document.getElementById('glassExtSel');
+    var glassIntSel=document.getElementById('glassIntSel');
+    var glassSlider=document.getElementById('glassSlider');
+    var glassSliderVal=document.getElementById('glassSliderVal');
+    var glassColor=document.getElementById('glassColor');
+
+    function glassExtOpac(){return (100-parseInt(glassSlider.value))/100*0.25;}
+
+    function applyGlass(){
+      var eIdx=parseInt(glassExtSel.value);
+      var iIdx=parseInt(glassIntSel.value);
+      // Restaura todas as superfícies antes de aplicar
+      for(var _i=0;_i<nSurface;_i++){
+        var sl=document.querySelector('.opacRangePer[data-idx="'+_i+'"]');
+        Plotly.restyle(gd,{opacity:sl?sl.value/100:1},[_i]);
+      }
+      // Externa: translúcida esbranquiçada
+      Plotly.restyle(gd,{opacity:glassExtOpac(),color:'rgb(235,235,238)'},[eIdx]);
+      // Interna: sólida, cor escolhida
+      Plotly.restyle(gd,{opacity:1,color:glassColor.value},[iIdx]);
+    }
+
+    function restoreGlass(){
+      for(var _i=0;_i<nSurface;_i++){
+        var sl=document.querySelector('.opacRangePer[data-idx="'+_i+'"]');
+        Plotly.restyle(gd,{opacity:sl?sl.value/100:1},[_i]);
+      }
+      // Restaura cor base (cinza padrão do slider de tom)
+      var tv=document.getElementById('toneRange');
+      if(tv){var v=tv.value;Plotly.restyle(gd,{color:'rgb('+v+','+v+','+v+')'});}
+    }
+
+    if(glassToggle){
+      glassToggle.addEventListener('click',function(){
+        glassOn=!glassOn;
+        if(glassOn){
+          // exclusão mútua: desliga raiz se ativa
+          if(rootFocusOn){rootFocusOn=false;rootFocusToggle.textContent='Raiz OFF';rootFocusToggle.classList.remove('on');restoreRootFocus();}
+          this.textContent='Vidro ON';this.classList.add('on');applyGlass();
+        } else {
+          this.textContent='Vidro OFF';this.classList.remove('on');restoreGlass();
+        }
+      });
+      glassSlider.addEventListener('input',function(){
+        glassSliderVal.textContent=this.value+'%';
+        if(glassOn)Plotly.restyle(gd,{opacity:glassExtOpac()},[parseInt(glassExtSel.value)]);
+      });
+      glassExtSel.addEventListener('change',function(){if(glassOn)applyGlass();});
+      glassIntSel.addEventListener('change',function(){if(glassOn)applyGlass();});
+      glassColor.addEventListener('input',function(){
+        if(glassOn)Plotly.restyle(gd,{color:this.value},[parseInt(glassIntSel.value)]);
+      });
+    }
   }
   setTimeout(init,400);
 })();
@@ -845,6 +981,8 @@ html,body{margin:0;padding:0;overflow:hidden;height:100%;background:#0f0f0f;colo
                 .replace("__OPAC__", _opac_html)
                 .replace("__EXT_OPTS__", _ext_opts)
                 .replace("__INT_OPTS__", _int_opts)
+                .replace("__RAIZ_DISABLED__", _raiz_disabled)
+                .replace("__N_SURFACE__", str(_n_surface))
             + _plot_frag
             + "</body></html>"
         )
