@@ -5,7 +5,8 @@ scikit-image>=0.22.0
 pydicom>=2.4.0
 tifffile>=2023.9.26
 nibabel>=5.2.0
-pyvista>=0.43.0
+pyvista==0.46.5
+vtk>=9.0.0
 plotly>=5.18.0
 reportlab>=4.0.0
 streamlit-authenticator==0.4.2

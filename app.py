@@ -487,15 +487,20 @@ if _is_stl:
 
     _fill_mesh_cached = None
     if st.session_state.get("fill_on") and _stl_ok:
-        from modules.mesh_fill import preencher_interior as _preencher
-        _fill_res_val = int(st.session_state.get("fill_res", 96))
-        _fill_src = _stl_path_mtime_dedup[0] if _stl_path_mtime_dedup else ("upload", _stl_ok[0]["mesh"].n_points)
-        _fill_ck = f"{_fill_src[0]}__{_fill_src[1]}__{_fill_res_val}"
-        _fill_cache = st.session_state.setdefault("_fill_cache", {})
-        if _fill_ck not in _fill_cache:
-            with st.spinner("Gerando interior sólido…"):
-                _fill_cache[_fill_ck] = _preencher(_stl_ok[0]["mesh"], resolucao=_fill_res_val)
-        _fill_mesh_cached = _fill_cache.get(_fill_ck)
+        try:
+            from modules.mesh_fill import preencher_interior as _preencher
+            _fill_res_val = int(st.session_state.get("fill_res", 96))
+            _fill_src = _stl_path_mtime_dedup[0] if _stl_path_mtime_dedup else ("upload", _stl_ok[0]["mesh"].n_points)
+            _fill_ck = f"{_fill_src[0]}__{_fill_src[1]}__{_fill_res_val}"
+            _fill_cache = st.session_state.setdefault("_fill_cache", {})
+            if _fill_ck not in _fill_cache:
+                with st.spinner("Gerando interior sólido…"):
+                    _fill_cache[_fill_ck] = _preencher(_stl_ok[0]["mesh"], resolucao=_fill_res_val)
+            _fill_mesh_cached = _fill_cache.get(_fill_ck)
+            if _fill_mesh_cached is None:
+                st.warning("Interior sólido: nenhum volume interno detectado nesta malha.")
+        except Exception as _fill_err:
+            st.warning(f"Não foi possível gerar o interior sólido neste ambiente: {_fill_err}")
 
     # Cores iniciais por estrutura (match no nome, case-insensitive); fallback por índice.
     _STL_COLOR_MAP = {
