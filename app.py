@@ -549,6 +549,15 @@ if _is_stl:
             f'<label class="vis-chk"><input type="checkbox" class="visChk" data-idx="{_vi}" checked> {_vm["name"]}</label>'
             for _vi, _vm in enumerate(_stl_ok)
         )
+        _opac_html = "".join(
+            f'<div class="opac-per-row">'
+            f'<div class="opac-per-label"><span>{_vm["name"]}</span>'
+            f'<span id="opacVal{_vi}">100%</span></div>'
+            f'<input type="range" class="opacRangePer" data-idx="{_vi}"'
+            f' data-val-id="opacVal{_vi}" min="1" max="100" step="1" value="100">'
+            f'</div>'
+            for _vi, _vm in enumerate(_stl_ok)
+        )
         _ctrl_html = """
 <style>
 html,body{margin:0;padding:0;overflow:hidden;height:100%;background:#0f0f0f;color:#eee;font-family:sans-serif}
@@ -565,10 +574,10 @@ html,body{margin:0;padding:0;overflow:hidden;height:100%;background:#0f0f0f;colo
 .sec-label{font-size:10px;font-weight:700;letter-spacing:.08em;color:#666;
            text-transform:uppercase;margin:14px 0 6px;padding:0}
 .sec-label:first-child{margin-top:2px}
-.opac-row{display:flex;align-items:center;gap:6px;margin-bottom:4px}
 .ends{font-size:10px;color:#555}
-#opacRange{flex:1;accent-color:#4da6ff;cursor:pointer}
-#opacVal{font-size:11px;color:#aaa;min-width:34px;text-align:right}
+.opac-per-row{margin-bottom:8px}
+.opac-per-label{font-size:10px;color:#888;display:flex;justify-content:space-between;margin-bottom:2px}
+.opacRangePer{width:100%;accent-color:#4da6ff;cursor:pointer}
 #lockBtn{width:100%;padding:6px 0;border:none;border-radius:4px;font-size:13px;
          font-weight:700;cursor:pointer;background:#3a3a3a;color:#ccc;
          transition:background .18s,box-shadow .18s,color .18s;margin-top:6px}
@@ -593,11 +602,7 @@ html,body{margin:0;padding:0;overflow:hidden;height:100%;background:#0f0f0f;colo
 </style>
 <div id="sidePanel">
   <p class="sec-label">CAMADAS</p>
-  <div class="opac-row">
-    <span class="ends">Transparente</span>
-    <input type="range" id="opacRange" min="1" max="100" step="1" value="100">
-    <span id="opacVal">100%</span>
-  </div>
+  __OPAC__
   <button id="lockBtn">&#x1F512; LOCK</button>
 
   <p class="sec-label">COR</p>
@@ -656,12 +661,12 @@ html,body{margin:0;padding:0;overflow:hidden;height:100%;background:#0f0f0f;colo
       }
     });
 
-    // ---- Opacidade ----
-    var range=document.getElementById('opacRange');
-    var opacVal=document.getElementById('opacVal');
-    range.addEventListener('input',function(){
-      opacVal.textContent=this.value+'%';
-      Plotly.restyle(gd,{opacity:this.value/100});
+    // ---- Opacidade por estrutura ----
+    document.querySelectorAll('.opacRangePer').forEach(function(s){
+      s.addEventListener('input',function(){
+        document.getElementById(this.dataset.valId).textContent=this.value+'%';
+        Plotly.restyle(gd,{opacity:this.value/100},[parseInt(this.dataset.idx)]);
+      });
     });
 
     // ---- Tom / Cor ----
@@ -749,7 +754,7 @@ html,body{margin:0;padding:0;overflow:hidden;height:100%;background:#0f0f0f;colo
             "<meta charset='utf-8'>"
             "<meta name='viewport' content='width=device-width,initial-scale=1'>"
             "</head><body>"
-            + _ctrl_html.replace("__VIS__", _vis_html)
+            + _ctrl_html.replace("__VIS__", _vis_html).replace("__OPAC__", _opac_html)
             + _plot_frag
             + "</body></html>"
         )
