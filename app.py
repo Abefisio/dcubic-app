@@ -37,18 +37,26 @@ stx.CookieManager = _patched_cookie_manager
 
 import streamlit_authenticator as stauth
 
-from modules.loader import load_volume
-from modules.viewer2d import render_triplanar, make_overlay_fig
-from modules.segmentation import segment_volume, TISSUE_PALETTE, DEFAULT_THRESHOLDS
-from modules.viewer3d import build_all_meshes, create_plotly_3d
-from modules.metrics import (
-    compute_volumes, compute_surface_areas, compute_distance,
-    mesh_to_stl_bytes, mesh_to_obj_bytes,
-)
-from modules.report import generate_pdf
-from modules.anatomy import compute_anatomy
-from modules import references
-from modules.mesh_loader import load_meshes
+try:
+    import traceback as _tb
+    from modules.loader import load_volume
+    from modules.viewer2d import render_triplanar, make_overlay_fig
+    from modules.segmentation import segment_volume, TISSUE_PALETTE, DEFAULT_THRESHOLDS
+    from modules.viewer3d import build_all_meshes, create_plotly_3d
+    from modules.metrics import (
+        compute_volumes, compute_surface_areas, compute_distance,
+        mesh_to_stl_bytes, mesh_to_obj_bytes,
+    )
+    from modules.report import generate_pdf
+    from modules.anatomy import compute_anatomy
+    from modules import references
+    from modules.mesh_loader import load_meshes
+except Exception as _startup_import_err:
+    st.error(
+        "**[DIAGNÓSTICO] Erro ao importar módulo — remova após identificar o problema**\n\n"
+        f"```\n{_tb.format_exc()}\n```"
+    )
+    st.stop()
 
 _MAX_VOXELS = 12_000_000  # ponytail: ajuste conforme RAM disponível (Streamlit Cloud ~1 GB)
 

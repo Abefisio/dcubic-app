@@ -17,7 +17,14 @@ import logging
 os.environ.setdefault("PYVISTA_OFF_SCREEN", "true")  # headless no Cloud
 
 import numpy as np
-import pyvista as pv
+try:
+    import pyvista as pv
+    _PV_OK = True
+except Exception as _pv_import_err:
+    logging.warning("[mesh_fill] pyvista/vtk indisponível: %s — somente fallback scipy", _pv_import_err)
+    pv = None  # type: ignore[assignment]
+    _PV_OK = False
+
 from scipy.ndimage import (
     binary_fill_holes, binary_dilation, label, generate_binary_structure
 )
@@ -26,7 +33,9 @@ from skimage.measure import marching_cubes
 
 # ── Caminho primário: VTK ────────────────────────────────────────────────────
 
-def _inside_vtk(mesh_pv: pv.PolyData, resolucao: int, bounds) -> np.ndarray:
+def _inside_vtk(mesh_pv, resolucao: int, bounds) -> np.ndarray:
+    if not _PV_OK:
+        raise RuntimeError("pyvista não disponível neste ambiente")
     xmin, xmax, ymin, ymax, zmin, zmax = bounds
     xs = np.linspace(xmin, xmax, resolucao)
     ys = np.linspace(ymin, ymax, resolucao)
@@ -40,7 +49,7 @@ def _inside_vtk(mesh_pv: pv.PolyData, resolucao: int, bounds) -> np.ndarray:
 
 # ── Caminho fallback: rasterização + flood-fill (sem VTK display) ────────────
 
-def _inside_fallback(mesh_pv: pv.PolyData, resolucao: int, bounds) -> np.ndarray:
+def _inside_fallback(mesh_pv, resolucao: int, bounds) -> np.ndarray:
     """
     Rasteriza a superfície da malha na grade voxel, fecha com dilation,
     e detecta o interior via flood-fill do exterior (canto = fora).
@@ -83,7 +92,7 @@ def _inside_fallback(mesh_pv: pv.PolyData, resolucao: int, bounds) -> np.ndarray
 
 # ── Função pública ────────────────────────────────────────────────────────────
 
-def preencher_interior(mesh_pv: pv.PolyData, resolucao: int = 128):
+def preencher_interior(mesh_pv, resolucao: int = 128):
     """
     Recebe uma malha pyvista (casca oca de STL) e retorna uma nova malha
     pyvista SÓLIDA preenchendo o volume interno fechado.
