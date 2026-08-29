@@ -601,15 +601,15 @@ if _is_stl:
             ))
             _fig_stl.data[0].update(opacity=0.22)
 
-        # Profundidade por vértice: distância à casca convexa, normalizada.
-        from scipy.spatial import ConvexHull as _CHull
+        # Profundidade por vértice: distância ao centróide, normalizada.
+        # ponytail: centróide em vez de ConvexHull — evita matriz (N×hull_faces)
+        # que ultrapassa 1 GB no Cloud para malhas de 100k+ pontos.
         import json as _jmod
         _pts_arr = _stl_ok[0]["mesh"].points
-        _hull = _CHull(_pts_arr)
-        _signed = _pts_arr @ _hull.equations[:, :3].T + _hull.equations[:, 3]
-        _depth = np.maximum(0, -_signed.max(axis=1))
+        _centroid = _pts_arr.mean(axis=0)
+        _dist_c = np.linalg.norm(_pts_arr - _centroid, axis=1)
         _intensity_json = _jmod.dumps(
-            (1.0 - _depth / (_depth.max() + 1e-9)).tolist()
+            (1.0 - _dist_c / (_dist_c.max() + 1e-9)).tolist()
         )
         _ctrl_html = """
 <style>
