@@ -502,13 +502,10 @@ if _is_stl:
         _fig_stl = create_plotly_3d(
             _meshes_dict, _tissue_colors_stl, opacities=_opac_dict, clip_z_mm=None
         )
-        # Slider Plotly nativo: 20 steps de 5% a 100%, restyle client-side (sem rerun)
-        _op_steps = [round(0.05 * i, 2) for i in range(1, 21)]
-        _n_traces  = len(_meshes_dict)
         _fig_stl.update_layout(
-            uirevision="constant",  # preserva câmera entre reruns (opacidade, seleção)
-            height=720,
-            margin=dict(l=0, r=0, t=0, b=90),  # espaço para o slider Plotly
+            uirevision="constant",  # preserva câmera entre reruns do Streamlit
+            height=680,
+            margin=dict(l=0, r=0, t=0, b=0),
             scene=dict(
                 dragmode="orbit",
                 aspectmode="data",
@@ -516,30 +513,6 @@ if _is_stl:
                 yaxis=dict(title=dict(font=dict(size=18)), tickfont=dict(size=15)),
                 zaxis=dict(title=dict(font=dict(size=18)), tickfont=dict(size=15)),
             ),
-            sliders=[dict(
-                active=len(_op_steps) - 1,  # começa em 100% (sólido)
-                currentvalue=dict(
-                    prefix="Camadas: ",
-                    visible=True,
-                    xanchor="center",
-                    font=dict(color="white", size=13),
-                ),
-                pad=dict(t=10, b=10),
-                x=0.05,
-                len=0.9,
-                bgcolor="rgba(50,50,50,0.85)",
-                bordercolor="rgba(120,120,120,0.6)",
-                font=dict(color="white", size=10),
-                tickcolor="rgba(120,120,120,0.6)",
-                steps=[
-                    dict(
-                        method="restyle",
-                        args=[{"opacity": op}],  # aplica a todos os traces
-                        label=f"{int(op * 100)}%",
-                    )
-                    for op in _op_steps
-                ],
-            )],
             updatemenus=[dict(
                 type="buttons",
                 direction="right",
@@ -563,7 +536,93 @@ if _is_stl:
                 ],
             )],
         )
-        st.plotly_chart(_fig_stl, use_container_width=True, key="stl_plotly_3d")
+        # Render via iframe HTML: slider de opacidade + botão LOCK em JS puro,
+        # sem rerun Streamlit — câmera nunca reseta ao mover o controle de camadas.
+        import streamlit.components.v1 as _components
+        _plot_frag = _fig_stl.to_html(
+            include_plotlyjs="cdn", full_html=False, div_id="stl_plot",
+        )
+        _ctrl_html = """
+<style>
+body{margin:0;background:#0f0f0f;color:#eee;font-family:sans-serif}
+#ctrl{display:flex;align-items:center;gap:12px;padding:8px 14px;
+      background:#1a1a1a;border-bottom:1px solid #2a2a2a;flex-wrap:wrap}
+#ctrl label{font-size:11px;font-weight:700;letter-spacing:.08em;color:#999;text-transform:uppercase}
+.ends{font-size:11px;color:#666}
+#opacRange{flex:1;min-width:120px;max-width:280px;accent-color:#4da6ff;cursor:pointer}
+#opacVal{font-size:12px;color:#aaa;min-width:38px;text-align:right}
+#lockBtn{padding:5px 18px;border:none;border-radius:4px;font-size:13px;font-weight:700;
+         cursor:pointer;background:#3a3a3a;color:#ccc;box-shadow:none;
+         transition:background .18s,box-shadow .18s,color .18s}
+#lockBtn.on{background:#4da6ff;color:#000;box-shadow:0 0 12px #4da6ffaa}
+</style>
+<div id="ctrl">
+  <label>CAMADAS</label>
+  <span class="ends">Transparente</span>
+  <input type="range" id="opacRange" min="1" max="100" step="1" value="100">
+  <span class="ends">Sólido</span>
+  <span id="opacVal">100%</span>
+  <button id="lockBtn">&#x1F512; LOCK</button>
+</div>
+<script>
+(function(){
+  var locked=false,savedCamera=null,lockApplying=false;
+
+  function captureCamera(gd){
+    try{
+      var sc=gd._fullLayout&&gd._fullLayout.scene;
+      if(sc&&sc.camera) return JSON.parse(JSON.stringify(sc.camera));
+    }catch(e){}
+    return null;
+  }
+
+  function init(){
+    var gd=document.getElementById('stl_plot');
+    if(!gd||!gd._fullLayout){setTimeout(init,250);return;}
+
+    var range=document.getElementById('opacRange');
+    var opacVal=document.getElementById('opacVal');
+    range.addEventListener('input',function(){
+      opacVal.textContent=this.value+'%';
+      Plotly.restyle(gd,{opacity:this.value/100});
+    });
+
+    gd.on('plotly_relayout',function(ev){
+      if(lockApplying) return;
+      if(locked&&savedCamera&&ev['scene.camera']){
+        lockApplying=true;
+        Plotly.relayout(gd,{'scene.camera':savedCamera}).then(function(){lockApplying=false;});
+      } else if(!locked&&ev['scene.camera']){
+        savedCamera=JSON.parse(JSON.stringify(ev['scene.camera']));
+      }
+    });
+
+    document.getElementById('lockBtn').addEventListener('click',function(){
+      locked=!locked;
+      if(locked){
+        savedCamera=captureCamera(gd)||savedCamera;
+        this.textContent='🔒 LOCK';
+        this.classList.add('on');
+      } else {
+        this.textContent='🔓 LOCK';
+        this.classList.remove('on');
+        Plotly.relayout(gd,{'scene.dragmode':'orbit'});
+      }
+    });
+  }
+  setTimeout(init,400);
+})();
+</script>"""
+        _full_html = (
+            "<!DOCTYPE html><html><head>"
+            "<meta charset='utf-8'>"
+            "<meta name='viewport' content='width=device-width,initial-scale=1'>"
+            "</head><body>"
+            + _ctrl_html
+            + _plot_frag
+            + "</body></html>"
+        )
+        _components.html(_full_html, height=760, scrolling=False)
     else:
         st.info("Ative ao menos uma estrutura na barra lateral para visualizar.")
 
