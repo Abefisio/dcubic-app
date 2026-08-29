@@ -509,6 +509,7 @@ if _is_stl:
             _meshes_dict, _tissue_colors_stl, opacities=_opac_dict, clip_z_mm=None
         )
         _fig_stl.update_layout(
+            uirevision="constant",  # preserva câmera entre reruns (opacidade, seleção)
             height=720,
             margin=dict(l=0, r=0, t=0, b=0),
             scene=dict(

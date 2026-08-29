@@ -119,6 +119,7 @@ def create_plotly_3d(
         ))
 
     fig.update_layout(
+        uirevision="constant",  # preserva câmera/zoom/rotação entre reruns do Streamlit
         scene=dict(
             xaxis=dict(title="X (mm)", backgroundcolor="rgb(10,10,10)", gridcolor="rgb(40,40,40)"),
             yaxis=dict(title="Y (mm)", backgroundcolor="rgb(10,10,10)", gridcolor="rgb(40,40,40)"),
