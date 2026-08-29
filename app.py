@@ -199,7 +199,7 @@ st.sidebar.caption(f"Logado como: {st.session_state.get('name', '')}")
 # ---------------------------------------------------------------------------
 st.markdown(
     "<style>"
-    ".block-container{padding-top:0rem !important;}"
+    ".block-container{padding-top:0rem!important;padding-left:1rem!important;padding-right:1rem!important;max-width:100%!important}"
     "header[data-testid='stHeader']{height:0;}"
     "[data-testid='stForm']{max-width:30% !important;min-width:320px;margin-left:auto !important;margin-right:auto !important;}"
     "</style>",
@@ -555,9 +555,10 @@ body{margin:0;background:#0f0f0f;color:#eee;font-family:sans-serif}
 #colorPick{width:32px;height:22px;border:none;border-radius:3px;cursor:pointer;padding:0}
 .vis-chk{font-size:11px;color:#aaa;display:flex;align-items:center;gap:4px;cursor:pointer}
 .vis-chk input{accent-color:#4da6ff;cursor:pointer}
+.modebar-container{left:8px!important;right:auto!important;top:8px!important}
 .modebar{opacity:1!important;background:rgba(30,30,30,0.7)!important;
          border-radius:4px;padding:4px 2px}
-.modebar-btn{margin:0 6px!important}
+.modebar-btn{margin:5px 0!important;display:block!important}
 .modebar-btn svg{transform:scale(1.6);transform-origin:center}
 .modebar-btn path{fill:#ddd!important}
 .modebar-btn:hover path{fill:#fff!important}
