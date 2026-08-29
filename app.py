@@ -473,29 +473,15 @@ if _is_stl:
         st.error("Nenhuma malha STL válida foi carregada.")
         st.stop()
 
-    st.sidebar.header("Estruturas STL")
-    st.sidebar.markdown("**Apresentação (didático)**")
-    _appearance = st.sidebar.radio(
-        "Aparência", ["Cinza (tom ajustável)", "Cor personalizada"],
-        key="stl_appearance",
-    )
-    if _appearance == "Cinza (tom ajustável)":
-        _tone = st.sidebar.slider("Tom (claro ↔ escuro)", 0, 255, 235, 1, key="stl_tone")
-        _col = (_tone, _tone, _tone)
-    else:
-        _hex = st.sidebar.color_picker("Cor da estrutura", "#e6e6e6", key="stl_custom_color")
-        _h = _hex.lstrip("#")
-        _col = tuple(int(_h[j:j + 2], 16) for j in (0, 2, 4))
-
+    # Aparência e visibilidade migradas para client-side (HTML abaixo).
+    _COL_INIT = (235, 235, 235)  # tom inicial — ajustável no slider HTML
     _meshes_dict = {}
     _tissue_colors_stl = {}
     _opac_dict = {}
-    for _i, _mi in enumerate(_stl_ok):
-        _tissue_colors_stl[_mi["name"]] = _col
-        _vis = st.sidebar.checkbox(_mi["name"], value=True, key=f"stl_vis_{_i}")
-        if _vis:
-            _meshes_dict[_mi["name"]] = _mi["mesh"]
-            _opac_dict[_mi["name"]] = 1.0
+    for _mi in _stl_ok:
+        _tissue_colors_stl[_mi["name"]] = _COL_INIT
+        _meshes_dict[_mi["name"]] = _mi["mesh"]
+        _opac_dict[_mi["name"]] = 1.0
 
     st.subheader("Render 3D — malhas STL")
     if _meshes_dict:
@@ -536,18 +522,22 @@ if _is_stl:
                 ],
             )],
         )
-        # Render via iframe HTML: slider de opacidade + botão LOCK em JS puro,
-        # sem rerun Streamlit — câmera nunca reseta ao mover o controle de camadas.
+        # Render via iframe HTML: todos os controles em JS puro — sem rerun.
         import streamlit.components.v1 as _components
         _plot_frag = _fig_stl.to_html(
             include_plotlyjs="cdn", full_html=False, div_id="stl_plot",
+            config={"displayModeBar": True},
+        )
+        _vis_html = "".join(
+            f'<label class="vis-chk"><input type="checkbox" class="visChk" data-idx="{_vi}" checked> {_vm["name"]}</label>'
+            for _vi, _vm in enumerate(_stl_ok)
         )
         _ctrl_html = """
 <style>
 body{margin:0;background:#0f0f0f;color:#eee;font-family:sans-serif}
-#ctrl{display:flex;align-items:center;gap:12px;padding:8px 14px;
+#ctrl,#ctrl2,#ctrl3{display:flex;align-items:center;gap:12px;padding:8px 14px;
       background:#1a1a1a;border-bottom:1px solid #2a2a2a;flex-wrap:wrap}
-#ctrl label{font-size:11px;font-weight:700;letter-spacing:.08em;color:#999;text-transform:uppercase}
+#ctrl label,#ctrl2 label,#ctrl3 label{font-size:11px;font-weight:700;letter-spacing:.08em;color:#999;text-transform:uppercase}
 .ends{font-size:11px;color:#666}
 #opacRange{flex:1;min-width:120px;max-width:280px;accent-color:#4da6ff;cursor:pointer}
 #opacVal{font-size:12px;color:#aaa;min-width:38px;text-align:right}
@@ -555,6 +545,21 @@ body{margin:0;background:#0f0f0f;color:#eee;font-family:sans-serif}
          cursor:pointer;background:#3a3a3a;color:#ccc;box-shadow:none;
          transition:background .18s,box-shadow .18s,color .18s}
 #lockBtn.on{background:#4da6ff;color:#000;box-shadow:0 0 12px #4da6ffaa}
+.mode-btn{padding:3px 12px;border:1px solid #444;border-radius:4px;font-size:11px;
+          font-weight:700;cursor:pointer;background:#2a2a2a;color:#aaa;
+          transition:background .15s,color .15s}
+.mode-btn.on{background:#555;color:#fff;border-color:#888}
+#toneRange{flex:1;min-width:100px;max-width:220px;accent-color:#aaa;cursor:pointer}
+#toneVal{font-size:11px;color:#aaa;min-width:28px}
+#colorPick{width:32px;height:22px;border:none;border-radius:3px;cursor:pointer;padding:0}
+.vis-chk{font-size:11px;color:#aaa;display:flex;align-items:center;gap:4px;cursor:pointer}
+.vis-chk input{accent-color:#4da6ff;cursor:pointer}
+.modebar{opacity:1!important;background:rgba(30,30,30,0.7)!important;
+         border-radius:4px;padding:4px 2px}
+.modebar-btn{margin:0 6px!important}
+.modebar-btn svg{transform:scale(2);transform-origin:center}
+.modebar-btn path{fill:#ddd!important}
+.modebar-btn:hover path{fill:#fff!important}
 </style>
 <div id="ctrl">
   <label>CAMADAS</label>
@@ -563,6 +568,23 @@ body{margin:0;background:#0f0f0f;color:#eee;font-family:sans-serif}
   <span class="ends">Sólido</span>
   <span id="opacVal">100%</span>
   <button id="lockBtn">&#x1F512; LOCK</button>
+</div>
+<div id="ctrl2">
+  <label>COR</label>
+  <button class="mode-btn on" id="modeGray">Cinza</button>
+  <button class="mode-btn" id="modeColor">Cor personalizada</button>
+  <span id="grayCtrl" style="display:flex;align-items:center;gap:8px;flex:1">
+    <span class="ends">Escuro</span>
+    <input type="range" id="toneRange" min="0" max="255" step="1" value="235">
+    <span class="ends">Claro</span>
+    <span id="toneVal">235</span>
+  </span>
+  <span id="colorCtrl" style="display:none;align-items:center;gap:8px">
+    <input type="color" id="colorPick" value="#ebebeb">
+  </span>
+</div>
+<div id="ctrl3">
+  <label>ESTRUTURAS</label>__VIS__
 </div>
 <script>
 (function(){
@@ -580,6 +602,7 @@ body{margin:0;background:#0f0f0f;color:#eee;font-family:sans-serif}
     var gd=document.getElementById('stl_plot');
     if(!gd||!gd._fullLayout){setTimeout(init,250);return;}
 
+    // ---- Opacidade ----
     var range=document.getElementById('opacRange');
     var opacVal=document.getElementById('opacVal');
     range.addEventListener('input',function(){
@@ -587,6 +610,42 @@ body{margin:0;background:#0f0f0f;color:#eee;font-family:sans-serif}
       Plotly.restyle(gd,{opacity:this.value/100});
     });
 
+    // ---- Tom / Cor ----
+    var toneRange=document.getElementById('toneRange');
+    var colorPick=document.getElementById('colorPick');
+    var modeGray=document.getElementById('modeGray');
+    var modeColor=document.getElementById('modeColor');
+    var grayCtrl=document.getElementById('grayCtrl');
+    var colorCtrl=document.getElementById('colorCtrl');
+
+    function applyColor(c){Plotly.restyle(gd,{color:c});}
+
+    toneRange.addEventListener('input',function(){
+      document.getElementById('toneVal').textContent=this.value;
+      var v=this.value;
+      applyColor('rgb('+v+','+v+','+v+')');
+    });
+    colorPick.addEventListener('input',function(){applyColor(this.value);});
+
+    modeGray.addEventListener('click',function(){
+      modeGray.classList.add('on');modeColor.classList.remove('on');
+      grayCtrl.style.display='flex';colorCtrl.style.display='none';
+      var v=toneRange.value;applyColor('rgb('+v+','+v+','+v+')');
+    });
+    modeColor.addEventListener('click',function(){
+      modeColor.classList.add('on');modeGray.classList.remove('on');
+      colorCtrl.style.display='flex';grayCtrl.style.display='none';
+      applyColor(colorPick.value);
+    });
+
+    // ---- Visibilidade ----
+    document.querySelectorAll('.visChk').forEach(function(chk){
+      chk.addEventListener('change',function(){
+        Plotly.restyle(gd,{visible:this.checked},[parseInt(this.dataset.idx)]);
+      });
+    });
+
+    // ---- LOCK ----
     gd.on('plotly_relayout',function(ev){
       if(lockApplying) return;
       if(locked&&savedCamera&&ev['scene.camera']){
@@ -618,11 +677,11 @@ body{margin:0;background:#0f0f0f;color:#eee;font-family:sans-serif}
             "<meta charset='utf-8'>"
             "<meta name='viewport' content='width=device-width,initial-scale=1'>"
             "</head><body>"
-            + _ctrl_html
+            + _ctrl_html.replace("__VIS__", _vis_html)
             + _plot_frag
             + "</body></html>"
         )
-        _components.html(_full_html, height=760, scrolling=False)
+        _components.html(_full_html, height=800, scrolling=False)
     else:
         st.info("Ative ao menos uma estrutura na barra lateral para visualizar.")
 
