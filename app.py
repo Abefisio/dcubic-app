@@ -569,11 +569,11 @@ html,body{margin:0;padding:0;overflow:hidden;height:100%;background:#0f0f0f;colo
 .vis-chk{font-size:11px;color:#aaa;display:flex;align-items:center;gap:6px;
          cursor:pointer;margin-bottom:6px}
 .vis-chk input{accent-color:#4da6ff;cursor:pointer;width:14px;height:14px}
-.modebar{opacity:1!important;background:rgba(30,30,30,0.7)!important;
-         border-radius:4px;padding:4px 2px}
-.modebar-btn svg{transform:scale(1.6);transform-origin:center}
-.modebar-btn path{fill:#ddd!important}
-.modebar-btn:hover path{fill:#fff!important}
+.modebar-container{display:none!important}
+.act-btn{width:100%;padding:6px 0;border:none;border-radius:4px;font-size:12px;
+         font-weight:700;cursor:pointer;background:#2a2a2a;color:#ccc;
+         margin-top:6px;transition:background .15s,color .15s}
+.act-btn:hover{background:#3a3a3a;color:#fff}
 </style>
 <div id="sidePanel">
   <p class="sec-label">CAMADAS</p>
@@ -601,6 +601,10 @@ html,body{margin:0;padding:0;overflow:hidden;height:100%;background:#0f0f0f;colo
 
   <p class="sec-label">ESTRUTURAS</p>
   __VIS__
+
+  <p class="sec-label">VISTA</p>
+  <button class="act-btn" id="resetViewBtn">&#x1F3E0; Resetar vista</button>
+  <button class="act-btn" id="downloadBtn">&#x1F4F7; Baixar imagem</button>
 </div>
 <button id="toggleBtn">&#x2039;</button>
 <script>
@@ -688,6 +692,24 @@ html,body{margin:0;padding:0;overflow:hidden;height:100%;background:#0f0f0f;colo
       } else if(!locked&&ev['scene.camera']){
         savedCamera=JSON.parse(JSON.stringify(ev['scene.camera']));
       }
+    });
+
+    // ---- Resetar vista ----
+    var _defaultCam={eye:{x:1.5,y:1.5,z:1.2},up:{x:0,y:0,z:1},center:{x:0,y:0,z:0}};
+    document.getElementById('resetViewBtn').addEventListener('click',function(){
+      // Desativa LOCK (idêntico ao lockBtn quando desliga)
+      locked=false;
+      var lb=document.getElementById('lockBtn');
+      lb.textContent='🔓 LOCK';
+      lb.classList.remove('on');
+      // Atualiza savedCamera para a câmera padrão — listener não reverterá
+      savedCamera=JSON.parse(JSON.stringify(_defaultCam));
+      Plotly.relayout(gd,{'scene.dragmode':'orbit','scene.camera':_defaultCam});
+    });
+
+    // ---- Baixar imagem ----
+    document.getElementById('downloadBtn').addEventListener('click',function(){
+      Plotly.downloadImage(gd,{format:'png',width:1600,height:1200,filename:'modelo_stl'});
     });
 
     document.getElementById('lockBtn').addEventListener('click',function(){
