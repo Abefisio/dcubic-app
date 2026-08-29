@@ -434,6 +434,14 @@ else:
         _stl_upload_dedup = _stl_from_upload[:1]
 
 _is_stl = bool(_stl_path_mtime_dedup or _stl_upload_dedup)
+if _is_stl:
+    st.sidebar.markdown("---")
+    st.sidebar.checkbox("Interior sólido", key="fill_on")
+    if st.session_state.get("fill_on"):
+        st.sidebar.select_slider(
+            "Detalhe (voxels)", options=[64, 96, 128, 192], value=96, key="fill_res"
+        )
+        st.sidebar.caption("⏳ Gera em alguns segundos; cacheado após a 1ª vez.")
 
 if _is_stl:
     _prog = st.progress(0, text="Preparando…")
@@ -476,6 +484,18 @@ if _is_stl:
     if not _stl_ok:
         st.error("Nenhuma malha STL válida foi carregada.")
         st.stop()
+
+    _fill_mesh_cached = None
+    if st.session_state.get("fill_on") and _stl_ok:
+        from modules.mesh_fill import preencher_interior as _preencher
+        _fill_res_val = int(st.session_state.get("fill_res", 96))
+        _fill_src = _stl_path_mtime_dedup[0] if _stl_path_mtime_dedup else ("upload", _stl_ok[0]["mesh"].n_points)
+        _fill_ck = f"{_fill_src[0]}__{_fill_src[1]}__{_fill_res_val}"
+        _fill_cache = st.session_state.setdefault("_fill_cache", {})
+        if _fill_ck not in _fill_cache:
+            with st.spinner("Gerando interior sólido…"):
+                _fill_cache[_fill_ck] = _preencher(_stl_ok[0]["mesh"], resolucao=_fill_res_val)
+        _fill_mesh_cached = _fill_cache.get(_fill_ck)
 
     # Cores iniciais por estrutura (match no nome, case-insensitive); fallback por índice.
     _STL_COLOR_MAP = {
@@ -545,6 +565,33 @@ if _is_stl:
             include_plotlyjs="cdn", full_html=False, div_id="stl_plot",
             config={"displayModeBar": True},
         )
+        if _fill_mesh_cached is not None:
+            import plotly.graph_objects as _gg
+            _fmesh = _fill_mesh_cached.triangulate()
+            _fpts = _fmesh.points
+            _ffaces = _fmesh.faces.reshape(-1, 4)[:, 1:]
+            _fig_stl.add_trace(_gg.Mesh3d(
+                x=_fpts[:, 2].tolist(), y=_fpts[:, 1].tolist(), z=_fpts[:, 0].tolist(),
+                i=_ffaces[:, 0].tolist(), j=_ffaces[:, 1].tolist(), k=_ffaces[:, 2].tolist(),
+                color="#6633cc",
+                opacity=1.0,
+                name="Interior",
+                showscale=False,
+                flatshading=False,
+                lighting=dict(ambient=0.35, diffuse=0.8, specular=0.15),
+            ))
+            _fig_stl.data[0].update(opacity=0.22)
+
+        # Profundidade por vértice: distância à casca convexa, normalizada.
+        from scipy.spatial import ConvexHull as _CHull
+        import json as _jmod
+        _pts_arr = _stl_ok[0]["mesh"].points
+        _hull = _CHull(_pts_arr)
+        _signed = _pts_arr @ _hull.equations[:, :3].T + _hull.equations[:, 3]
+        _depth = np.maximum(0, -_signed.max(axis=1))
+        _intensity_json = _jmod.dumps(
+            (1.0 - _depth / (_depth.max() + 1e-9)).tolist()
+        )
         _ctrl_html = """
 <style>
 html,body{margin:0;padding:0;overflow:hidden;height:100%;background:#0f0f0f;color:#eee;font-family:sans-serif}
@@ -582,6 +629,13 @@ html,body{margin:0;padding:0;overflow:hidden;height:100%;background:#0f0f0f;colo
          font-weight:700;cursor:pointer;background:#2a2a2a;color:#ccc;
          margin-top:6px;transition:background .15s,color .15s}
 .act-btn:hover{background:#3a3a3a;color:#fff}
+#depthToggle{width:100%;padding:6px 0;border:none;border-radius:4px;font-size:12px;
+             font-weight:700;cursor:pointer;background:#3a3a3a;color:#ccc;
+             margin-top:2px;transition:background .18s,color .18s}
+#depthToggle.on{background:#6633cc;color:#fff;box-shadow:0 0 10px #6633cc99}
+.depth-row{display:flex;align-items:center;gap:6px;margin-top:6px}
+#corInterior{flex:1;height:26px;border:none;border-radius:4px;cursor:pointer;padding:0}
+#fillColor{flex:1;height:26px;border:none;border-radius:4px;cursor:pointer;padding:0}
 </style>
 <div id="sidePanel">
   <p class="sec-label">OPACIDADE</p>
@@ -606,6 +660,21 @@ html,body{margin:0;padding:0;overflow:hidden;height:100%;background:#0f0f0f;colo
   </div>
   <div id="colorCtrl" style="display:none">
     <input type="color" id="colorPick" value="#ebebeb">
+  </div>
+
+  <div id="fillSection" style="display:__FILL_DISPLAY__">
+  <p class="sec-label">INTERIOR SÓLIDO</p>
+  <div class="depth-row">
+    <span class="ends">Cor</span>
+    <input type="color" id="fillColor" value="#6633cc">
+  </div>
+  </div>
+
+  <p class="sec-label">PROFUNDIDADE</p>
+  <button id="depthToggle">Profundidade OFF</button>
+  <div class="depth-row">
+    <span class="ends">Cor interior</span>
+    <input type="color" id="corInterior" value="#6633cc">
   </div>
 
   <p class="sec-label">VISTA</p>
@@ -651,7 +720,8 @@ html,body{margin:0;padding:0;overflow:hidden;height:100%;background:#0f0f0f;colo
     var opacVal=document.getElementById('opacVal');
     opacRange.addEventListener('input',function(){
       opacVal.textContent=this.value+'%';
-      Plotly.restyle(gd,{opacity:this.value/100});
+      if(_fillActive) Plotly.restyle(gd,{opacity:this.value/100},[0]);
+      else Plotly.restyle(gd,{opacity:this.value/100});
     });
 
     // ---- Tom / Cor ----
@@ -662,7 +732,13 @@ html,body{margin:0;padding:0;overflow:hidden;height:100%;background:#0f0f0f;colo
     var grayCtrl=document.getElementById('grayCtrl');
     var colorCtrl=document.getElementById('colorCtrl');
 
-    function applyColor(c){Plotly.restyle(gd,{color:c});}
+    var _fillActive=__FILL_ACTIVE__;
+    var depthOn=false;
+    function applyColor(c){
+      if(depthOn) return;
+      if(_fillActive) Plotly.restyle(gd,{color:c},[0]);
+      else Plotly.restyle(gd,{color:c});
+    }
 
     toneRange.addEventListener('input',function(){
       document.getElementById('toneVal').textContent=this.value;
@@ -721,6 +797,40 @@ html,body{margin:0;padding:0;overflow:hidden;height:100%;background:#0f0f0f;colo
         Plotly.relayout(gd,{'scene.dragmode':'orbit'});
       }
     });
+
+    // ---- Interior sólido (cor client-side) ----
+    var _fillColorPick=document.getElementById('fillColor');
+    if(_fillActive&&_fillColorPick){
+      _fillColorPick.addEventListener('input',function(){
+        Plotly.restyle(gd,{color:this.value},[1]);
+      });
+    }
+
+    // ---- Realce de profundidade ----
+    var _iData=__INTENSITY_JSON__;
+    var depthToggle=document.getElementById('depthToggle');
+    var corInterior=document.getElementById('corInterior');
+    function getDepthScale(){return[[[0,corInterior.value],[1,'#ffffff']]];}
+    function currentFlatColor(){
+      var v=toneRange.value;
+      return document.getElementById('modeColor').classList.contains('on')
+        ?document.getElementById('colorPick').value
+        :'rgb('+v+','+v+','+v+')';
+    }
+    depthToggle.addEventListener('click',function(){
+      depthOn=!depthOn;
+      if(depthOn){
+        this.textContent='Profundidade ON';this.classList.add('on');
+        Plotly.restyle(gd,{intensity:[_iData],colorscale:getDepthScale(),showscale:[false]},[0]);
+      }else{
+        this.textContent='Profundidade OFF';this.classList.remove('on');
+        var fc=currentFlatColor();
+        Plotly.restyle(gd,{colorscale:[[[0,fc],[1,fc]]],showscale:[false]},[0]);
+      }
+    });
+    corInterior.addEventListener('input',function(){
+      if(depthOn)Plotly.restyle(gd,{colorscale:getDepthScale()},[0]);
+    });
   }
   setTimeout(init,400);
 })();
@@ -730,7 +840,12 @@ html,body{margin:0;padding:0;overflow:hidden;height:100%;background:#0f0f0f;colo
             "<meta charset='utf-8'>"
             "<meta name='viewport' content='width=device-width,initial-scale=1'>"
             "</head><body>"
-            + _ctrl_html
+            + (
+                _ctrl_html
+                .replace("__INTENSITY_JSON__", _intensity_json)
+                .replace("__FILL_DISPLAY__", "block" if _fill_mesh_cached is not None else "none")
+                .replace("__FILL_ACTIVE__", "true" if _fill_mesh_cached is not None else "false")
+            )
             + _plot_frag
             + "</body></html>"
         )
