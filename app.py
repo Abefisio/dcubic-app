@@ -490,7 +490,8 @@ if _is_stl:
         )
         _fig_stl.update_layout(
             uirevision="constant",  # preserva câmera entre reruns do Streamlit
-            height=680,
+            modebar=dict(orientation="v"),
+            height=1156,
             margin=dict(l=0, r=0, t=0, b=0),
             scene=dict(
                 dragmode="orbit",
@@ -535,7 +536,7 @@ if _is_stl:
         _ctrl_html = """
 <style>
 body{margin:0;background:#0f0f0f;color:#eee;font-family:sans-serif}
-#ctrl,#ctrl2,#ctrl3{display:flex;align-items:center;gap:12px;padding:8px 14px;
+#ctrl,#ctrl2,#ctrl3{display:flex;align-items:center;gap:8px;padding:4px 14px;
       background:#1a1a1a;border-bottom:1px solid #2a2a2a;flex-wrap:wrap}
 #ctrl label,#ctrl2 label,#ctrl3 label{font-size:11px;font-weight:700;letter-spacing:.08em;color:#999;text-transform:uppercase}
 .ends{font-size:11px;color:#666}
@@ -557,7 +558,7 @@ body{margin:0;background:#0f0f0f;color:#eee;font-family:sans-serif}
 .modebar{opacity:1!important;background:rgba(30,30,30,0.7)!important;
          border-radius:4px;padding:4px 2px}
 .modebar-btn{margin:0 6px!important}
-.modebar-btn svg{transform:scale(2);transform-origin:center}
+.modebar-btn svg{transform:scale(1.6);transform-origin:center}
 .modebar-btn path{fill:#ddd!important}
 .modebar-btn:hover path{fill:#fff!important}
 </style>
@@ -681,7 +682,7 @@ body{margin:0;background:#0f0f0f;color:#eee;font-family:sans-serif}
             + _plot_frag
             + "</body></html>"
         )
-        _components.html(_full_html, height=800, scrolling=False)
+        _components.html(_full_html, height=1250, scrolling=False)
     else:
         st.info("Ative ao menos uma estrutura na barra lateral para visualizar.")
 
