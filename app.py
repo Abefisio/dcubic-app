@@ -517,7 +517,7 @@ if _is_stl:
                     _verts_i = _interior.points
                     _faces_i = _interior.faces.reshape(-1, 4)[:, 1:]
                     _fig_stl.add_trace(_go.Mesh3d(
-                        x=_verts_i[:, 0], y=_verts_i[:, 1], z=_verts_i[:, 2],
+                        x=_verts_i[:, 2], y=_verts_i[:, 1], z=_verts_i[:, 0],
                         i=_faces_i[:, 0], j=_faces_i[:, 1], k=_faces_i[:, 2],
                         color="#7B2FBE", opacity=1.0,
                         name="Interior",
