@@ -69,6 +69,7 @@ def create_plotly_3d(
     tissue_colors: dict[str, tuple[int, int, int]],
     opacities: dict[str, float] | None = None,
     clip_z_mm: float | None = None,
+    clip_plane: dict | None = None,
 ) -> go.Figure:
     """
     Cria figura Plotly 3D com todas as malhas de tecidos (WebGL — sem VTK em runtime).
@@ -83,6 +84,14 @@ def create_plotly_3d(
     _op = opacities or {}
     fig = go.Figure()
 
+    # Resolve clip: clip_plane tem precedência; clip_z_mm é alias legado para eixo Z
+    _clip_axis: int | None = None
+    _clip_val: float | None = None
+    if clip_z_mm is not None:
+        _clip_axis, _clip_val = 0, clip_z_mm
+    if clip_plane is not None:
+        _clip_axis, _clip_val = clip_plane["axis"], clip_plane["value"]
+
     for name, mesh in meshes.items():
         if mesh is None:
             continue
@@ -90,9 +99,8 @@ def create_plotly_3d(
         pts = mesh.points                              # (N, 3): col0=Z, col1=Y, col2=X
         fcs = mesh.faces.reshape(-1, 4)[:, 1:]        # (M, 3): índices de face
 
-        if clip_z_mm is not None:
-            z_vals = pts[:, 0]
-            keep = z_vals[fcs].max(axis=1) <= clip_z_mm
+        if _clip_axis is not None:
+            keep = pts[:, _clip_axis][fcs].max(axis=1) <= _clip_val
             fcs = fcs[keep]
             if len(fcs) == 0:
                 continue

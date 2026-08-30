@@ -416,18 +416,20 @@ _stl_upload_dedup = []
 
 _opcoes = st.session_state.get("stl_paths", [])
 if _opcoes:
-    _sel_path = st.sidebar.selectbox(
-        "Estrutura a exibir",
+    _sel_paths = st.sidebar.multiselect(
+        "Estruturas a exibir",
         options=_opcoes,
+        default=_opcoes,
         format_func=lambda p: os.path.splitext(os.path.basename(p))[0],
         key="_stl_selected",
     )
-    if _sel_path != st.session_state.get("_stl_last"):
+    _sel_tuple = tuple(sorted(_sel_paths))
+    if _sel_tuple != st.session_state.get("_stl_last"):
         _load_stl_from_paths.clear()
-        st.session_state["_stl_last"] = _sel_path
+        st.session_state["_stl_last"] = _sel_tuple
     _stl_path_mtime_dedup = [
-        (_sel_path, os.path.getmtime(_sel_path))
-    ] if _sel_path and os.path.isfile(_sel_path) else []
+        (_p, os.path.getmtime(_p)) for _p in _sel_paths if _p and os.path.isfile(_p)
+    ]
 else:
     # Upload: usa o primeiro STL enviado
     if _stl_from_upload:
@@ -449,17 +451,17 @@ if _is_stl:
     # cache-miss = 25% antes da chamada bloqueante, 100% após.
     _mi_disk = []
     if _stl_path_mtime_dedup:
-        _sel_base = os.path.splitext(_stl_path_mtime_dedup[0][0])[0]
-        _disk_cached = (
-            os.path.isfile(_sel_base + ".dcubic_cache.ply")
-            and os.path.isfile(_sel_base + ".dcubic_cache.json")
+        _all_cached = all(
+            os.path.isfile(os.path.splitext(_p)[0] + ".dcubic_cache.ply")
+            and os.path.isfile(os.path.splitext(_p)[0] + ".dcubic_cache.json")
+            for _p, _ in _stl_path_mtime_dedup
         )
-        if _disk_cached:
+        if _all_cached:
             _cb(100, "Carregado do cache")
         else:
-            _cb(25, "Lendo e decimando STL")
+            _cb(25, "Lendo e decimando STL…")
         _mi_disk = _load_stl_from_paths(tuple(_stl_path_mtime_dedup))
-        if not _disk_cached:
+        if not _all_cached:
             _cb(100, "Pronto")
 
     # Upload: progress_cb funciona plenamente (sem camada de cache)
@@ -501,10 +503,88 @@ if _is_stl:
         _meshes_dict[_mi["name"]] = _mi["mesh"]
         _opac_dict[_mi["name"]] = 1.0
 
+    # ── Slider único: acopla opacidade da Dentina + erosão morfológica do canal ──
+    st.sidebar.markdown("---")
+    st.sidebar.subheader("Revelação do canal")
+    _reveal_pct = st.sidebar.slider(
+        "↑ Dentina some / canal emerge",
+        0, 100, 0, step=5, format="%d%%", key="reveal_pct",
+    )
+    _t = _reveal_pct / 100.0
+
+    # Opacidade da Dentina: 0.80 → 0.05 conforme slider sobe
+    _has_multi = len(_stl_ok) > 1
+    for _mi in _stl_ok:
+        _nl = _mi["name"].lower()
+        if "dentina" in _nl and _has_multi:
+            _opac_dict[_mi["name"]] = round(0.80 - _t * 0.75, 3)
+
+    # Erosão morfológica do canal proporcional ao slider
+    _MAX_EROSION = 10
+    _erosion_iters = int(_t * _MAX_EROSION)
+    _canal_mi = next(
+        (m for m in _stl_ok if any(k in m["name"].lower() for k in ("raiz", "canal", "molar", "voi"))),
+        None,
+    )
+
+    if _canal_mi is not None and _erosion_iters > 0:
+        _vox_key = f"_vox_{_canal_mi['name']}_{_canal_mi['n_faces_display']}"
+        if _vox_key not in st.session_state:
+            with st.spinner("Preparando volume do canal (só na 1ª vez)…"):
+                from scipy.ndimage import (binary_dilation, binary_fill_holes,
+                                           label, generate_binary_structure)
+                _mc = _canal_mi["mesh"]
+                _bds = _mc.bounds
+                _xmn, _xmx, _ymn, _ymx, _zmn, _zmx = _bds
+                _N = 128
+
+                def _w2v(_arr, _lo, _hi):
+                    return ((_arr - _lo) / (_hi - _lo + 1e-9) * (_N - 1)).astype(int).clip(0, _N - 1)
+
+                _pts_c = _mc.points
+                _sg = np.zeros((_N, _N, _N), dtype=bool)
+                _sg[_w2v(_pts_c[:, 0], _xmn, _xmx),
+                    _w2v(_pts_c[:, 1], _ymn, _ymx),
+                    _w2v(_pts_c[:, 2], _zmn, _zmx)] = True
+                try:
+                    _fc2 = _mc.faces.reshape(-1, 4)[:, 1:]
+                    _ctr = _pts_c[_fc2].mean(axis=1)
+                    _sg[_w2v(_ctr[:, 0], _xmn, _xmx),
+                        _w2v(_ctr[:, 1], _ymn, _ymx),
+                        _w2v(_ctr[:, 2], _zmn, _zmx)] = True
+                except Exception:
+                    pass
+                _st2 = generate_binary_structure(3, 1)
+                _cl = binary_dilation(_sg, structure=_st2, iterations=2)
+                _lb, _ = label(~_cl, structure=_st2)
+                _ins = ~(_lb == _lb[0, 0, 0]) & ~_cl
+                st.session_state[_vox_key] = (binary_fill_holes(_ins), _bds)
+
+        _vox_c, _bds_c = st.session_state[_vox_key]
+        from scipy.ndimage import binary_erosion as _ber, generate_binary_structure as _gbs
+        _vox_er = _ber(_vox_c, structure=_gbs(3, 1), iterations=_erosion_iters)
+
+        if _vox_er.any():
+            from skimage.measure import marching_cubes as _mcc
+            import pyvista as _pv2
+            _xmn2, _xmx2, _ymn2, _ymx2, _zmn2, _zmx2 = _bds_c
+            _N2 = 128
+            _dx = (_xmx2 - _xmn2) / (_N2 - 1)
+            _dy = (_ymx2 - _ymn2) / (_N2 - 1)
+            _dz = (_zmx2 - _zmn2) / (_N2 - 1)
+            _vts2, _fcs2, _, _ = _mcc(_vox_er.astype(np.float32), level=0.5, spacing=(_dx, _dy, _dz))
+            _vts2[:, 0] += _xmn2
+            _vts2[:, 1] += _ymn2
+            _vts2[:, 2] += _zmn2
+            _n_f2 = len(_fcs2)
+            _cells2 = np.hstack([np.full((_n_f2, 1), 3, dtype=np.int64), _fcs2]).ravel()
+            _ct2 = np.full(_n_f2, _pv2.CellType.TRIANGLE, dtype=np.uint8)
+            _meshes_dict[_canal_mi["name"]] = _pv2.UnstructuredGrid(_cells2, _ct2, _vts2).extract_surface()
+
     st.subheader("Render 3D — malhas STL")
     if _meshes_dict:
         _fig_stl = create_plotly_3d(
-            _meshes_dict, _tissue_colors_stl, opacities=_opac_dict, clip_z_mm=None
+            _meshes_dict, _tissue_colors_stl, opacities=_opac_dict
         )
 
         if _revelar_interior and _stl_ok:
