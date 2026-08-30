@@ -581,10 +581,15 @@ if _is_stl:
             _ct2 = np.full(_n_f2, _pv2.CellType.TRIANGLE, dtype=np.uint8)
             _meshes_dict[_canal_mi["name"]] = _pv2.UnstructuredGrid(_cells2, _ct2, _vts2).extract_surface()
 
+    # Clip plane mesial fixo: secciona eixo Y a 35% do range (revela canal internamente)
+    _y_pts = np.concatenate([m.points[:, 1] for m in _meshes_dict.values() if m is not None and len(m.points)])
+    _y_cut = float(_y_pts.min() + (_y_pts.max() - _y_pts.min()) * 0.35) if len(_y_pts) else None
+    _clip_mesial = {"axis": 1, "value": _y_cut} if _y_cut is not None else None
+
     st.subheader("Render 3D — malhas STL")
     if _meshes_dict:
         _fig_stl = create_plotly_3d(
-            _meshes_dict, _tissue_colors_stl, opacities=_opac_dict
+            _meshes_dict, _tissue_colors_stl, opacities=_opac_dict, clip_plane=_clip_mesial
         )
 
         if _revelar_interior and _stl_ok:
