@@ -503,6 +503,16 @@ if _is_stl:
         _meshes_dict[_mi["name"]] = _mi["mesh"]
         _opac_dict[_mi["name"]] = 1.0
 
+    # ── Checkboxes de visibilidade por estrutura ──
+    st.sidebar.markdown("---")
+    st.sidebar.subheader("Estruturas visíveis")
+    _visible_dict = {
+        _mi["name"]: st.sidebar.checkbox(
+            f"Mostrar {_mi['name']}", value=True, key=f"visivel_{_mi['name']}"
+        )
+        for _mi in _stl_ok
+    }
+
     # ── Slider único: acopla opacidade da Dentina + erosão morfológica do canal ──
     st.sidebar.markdown("---")
     st.sidebar.subheader("Revelação do canal")
@@ -588,8 +598,9 @@ if _is_stl:
 
     st.subheader("Render 3D — malhas STL")
     if _meshes_dict:
+        _meshes_filtrado = {n: m for n, m in _meshes_dict.items() if _visible_dict.get(n, True)}
         _fig_stl = create_plotly_3d(
-            _meshes_dict, _tissue_colors_stl, opacities=_opac_dict, clip_plane=_clip_mesial
+            _meshes_filtrado, _tissue_colors_stl, opacities=_opac_dict, clip_plane=_clip_mesial
         )
 
         if _revelar_interior and _stl_ok:
