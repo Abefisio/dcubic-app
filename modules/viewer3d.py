@@ -70,6 +70,7 @@ def create_plotly_3d(
     opacities: dict[str, float] | None = None,
     clip_z_mm: float | None = None,
     clip_plane: dict | None = None,
+    bbox_meshes: dict[str, pv.PolyData | None] | None = None,
 ) -> go.Figure:
     """
     Cria figura Plotly 3D com todas as malhas de tecidos (WebGL — sem VTK em runtime).
@@ -79,7 +80,8 @@ def create_plotly_3d(
       mesh.points[:,1] = Y  →  Plotly y
       mesh.points[:,2] = X  →  Plotly x
 
-    O clip remove faces onde o vértice mais alto em Z > clip_z_mm.
+    bbox_meshes: conjunto COMPLETO de malhas (incluindo as não visíveis) usado
+    exclusivamente para calcular o bounding box estável da cena. Se None, usa meshes.
     """
     _op = opacities or {}
     fig = go.Figure()
@@ -91,6 +93,22 @@ def create_plotly_3d(
         _clip_axis, _clip_val = 0, clip_z_mm
     if clip_plane is not None:
         _clip_axis, _clip_val = clip_plane["axis"], clip_plane["value"]
+
+    # Bounding box global — calculado uma única vez a partir de TODAS as malhas
+    _bbox_src = bbox_meshes if bbox_meshes is not None else meshes
+    _all_pts = [m.points for m in _bbox_src.values() if m is not None and len(m.points)]
+    if _all_pts:
+        _pts_cat = np.concatenate(_all_pts, axis=0)
+        # col2→plotly_x, col1→plotly_y, col0→plotly_z
+        _xr = [float(_pts_cat[:, 2].min()), float(_pts_cat[:, 2].max())]
+        _yr = [float(_pts_cat[:, 1].min()), float(_pts_cat[:, 1].max())]
+        _zr = [float(_pts_cat[:, 0].min()), float(_pts_cat[:, 0].max())]
+        _xe, _ye, _ze = _xr[1]-_xr[0], _yr[1]-_yr[0], _zr[1]-_zr[0]
+        _me = max(_xe, _ye, _ze, 1e-6)
+        _aspect = dict(x=_xe/_me, y=_ye/_me, z=_ze/_me)
+    else:
+        _xr = _yr = _zr = [0, 1]
+        _aspect = dict(x=1, y=1, z=1)
 
     for name, mesh in meshes.items():
         if mesh is None:
@@ -107,6 +125,9 @@ def create_plotly_3d(
 
         r, g, b = tissue_colors.get(name, (200, 200, 200))
         op = _op.get(name, 1.0)
+
+        if op <= 0.01:   # skip em vez de opacity=0 — evita artefato WebGL
+            continue
 
         fig.add_trace(go.Mesh3d(
             x=pts[:, 2],         # X anatômico
@@ -129,11 +150,12 @@ def create_plotly_3d(
     fig.update_layout(
         uirevision="constant",  # preserva câmera/zoom/rotação entre reruns do Streamlit
         scene=dict(
-            xaxis=dict(title="X (mm)", backgroundcolor="rgb(10,10,10)", gridcolor="rgb(40,40,40)"),
-            yaxis=dict(title="Y (mm)", backgroundcolor="rgb(10,10,10)", gridcolor="rgb(40,40,40)"),
-            zaxis=dict(title="Z (mm)", backgroundcolor="rgb(10,10,10)", gridcolor="rgb(40,40,40)"),
+            xaxis=dict(title="X (mm)", backgroundcolor="rgb(10,10,10)", gridcolor="rgb(40,40,40)", range=_xr),
+            yaxis=dict(title="Y (mm)", backgroundcolor="rgb(10,10,10)", gridcolor="rgb(40,40,40)", range=_yr),
+            zaxis=dict(title="Z (mm)", backgroundcolor="rgb(10,10,10)", gridcolor="rgb(40,40,40)", range=_zr),
             bgcolor="rgb(15,15,15)",
-            aspectmode="data",
+            aspectmode="manual",
+            aspectratio=_aspect,
         ),
         paper_bgcolor="rgb(15,15,15)",
         font=dict(color="white"),

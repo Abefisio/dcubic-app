@@ -292,7 +292,7 @@ _uploads = st.sidebar.file_uploader(
 # ---------------------------------------------------------------------------
 
 # Caminho A: leitura da pasta local — só disponível quando o diretório padrão existe.
-_LOCAL_DEFAULT = os.path.expanduser("~/Desktop/DCUBIC-SITE/MICROTOMO")
+_LOCAL_DEFAULT = os.path.expanduser("~/Desktop/DCUBIC-SITE/STL")
 _local_available = os.path.isdir(_LOCAL_DEFAULT)
 
 if _local_available:
@@ -513,94 +513,12 @@ if _is_stl:
         for _mi in _stl_ok
     }
 
-    # ── Slider único: acopla opacidade da Dentina + erosão morfológica do canal ──
-    st.sidebar.markdown("---")
-    st.sidebar.subheader("Revelação do canal")
-    _reveal_pct = st.sidebar.slider(
-        "↑ Dentina some / canal emerge",
-        0, 100, 0, step=5, format="%d%%", key="reveal_pct",
-    )
-    _t = _reveal_pct / 100.0
-
-    # Opacidade da Dentina: 0.80 → 0.05 conforme slider sobe
-    _has_multi = len(_stl_ok) > 1
-    for _mi in _stl_ok:
-        _nl = _mi["name"].lower()
-        if "dentina" in _nl and _has_multi:
-            _opac_dict[_mi["name"]] = round(0.80 - _t * 0.75, 3)
-
-    # Erosão morfológica do canal proporcional ao slider
-    _MAX_EROSION = 10
-    _erosion_iters = int(_t * _MAX_EROSION)
-    _canal_mi = next(
-        (m for m in _stl_ok if any(k in m["name"].lower() for k in ("raiz", "canal", "molar", "voi"))),
-        None,
-    )
-
-    if _canal_mi is not None and _erosion_iters > 0:
-        _vox_key = f"_vox_{_canal_mi['name']}_{_canal_mi['n_faces_display']}"
-        if _vox_key not in st.session_state:
-            with st.spinner("Preparando volume do canal (só na 1ª vez)…"):
-                from scipy.ndimage import (binary_dilation, binary_fill_holes,
-                                           label, generate_binary_structure)
-                _mc = _canal_mi["mesh"]
-                _bds = _mc.bounds
-                _xmn, _xmx, _ymn, _ymx, _zmn, _zmx = _bds
-                _N = 128
-
-                def _w2v(_arr, _lo, _hi):
-                    return ((_arr - _lo) / (_hi - _lo + 1e-9) * (_N - 1)).astype(int).clip(0, _N - 1)
-
-                _pts_c = _mc.points
-                _sg = np.zeros((_N, _N, _N), dtype=bool)
-                _sg[_w2v(_pts_c[:, 0], _xmn, _xmx),
-                    _w2v(_pts_c[:, 1], _ymn, _ymx),
-                    _w2v(_pts_c[:, 2], _zmn, _zmx)] = True
-                try:
-                    _fc2 = _mc.faces.reshape(-1, 4)[:, 1:]
-                    _ctr = _pts_c[_fc2].mean(axis=1)
-                    _sg[_w2v(_ctr[:, 0], _xmn, _xmx),
-                        _w2v(_ctr[:, 1], _ymn, _ymx),
-                        _w2v(_ctr[:, 2], _zmn, _zmx)] = True
-                except Exception:
-                    pass
-                _st2 = generate_binary_structure(3, 1)
-                _cl = binary_dilation(_sg, structure=_st2, iterations=2)
-                _lb, _ = label(~_cl, structure=_st2)
-                _ins = ~(_lb == _lb[0, 0, 0]) & ~_cl
-                st.session_state[_vox_key] = (binary_fill_holes(_ins), _bds)
-
-        _vox_c, _bds_c = st.session_state[_vox_key]
-        from scipy.ndimage import binary_erosion as _ber, generate_binary_structure as _gbs
-        _vox_er = _ber(_vox_c, structure=_gbs(3, 1), iterations=_erosion_iters)
-
-        if _vox_er.any():
-            from skimage.measure import marching_cubes as _mcc
-            import pyvista as _pv2
-            _xmn2, _xmx2, _ymn2, _ymx2, _zmn2, _zmx2 = _bds_c
-            _N2 = 128
-            _dx = (_xmx2 - _xmn2) / (_N2 - 1)
-            _dy = (_ymx2 - _ymn2) / (_N2 - 1)
-            _dz = (_zmx2 - _zmn2) / (_N2 - 1)
-            _vts2, _fcs2, _, _ = _mcc(_vox_er.astype(np.float32), level=0.5, spacing=(_dx, _dy, _dz))
-            _vts2[:, 0] += _xmn2
-            _vts2[:, 1] += _ymn2
-            _vts2[:, 2] += _zmn2
-            _n_f2 = len(_fcs2)
-            _cells2 = np.hstack([np.full((_n_f2, 1), 3, dtype=np.int64), _fcs2]).ravel()
-            _ct2 = np.full(_n_f2, _pv2.CellType.TRIANGLE, dtype=np.uint8)
-            _meshes_dict[_canal_mi["name"]] = _pv2.UnstructuredGrid(_cells2, _ct2, _vts2).extract_surface()
-
-    # Clip plane mesial fixo: secciona eixo Y a 35% do range (revela canal internamente)
-    _y_pts = np.concatenate([m.points[:, 1] for m in _meshes_dict.values() if m is not None and len(m.points)])
-    _y_cut = float(_y_pts.min() + (_y_pts.max() - _y_pts.min()) * 0.35) if len(_y_pts) else None
-    _clip_mesial = {"axis": 1, "value": _y_cut} if _y_cut is not None else None
-
     st.subheader("Render 3D — malhas STL")
     if _meshes_dict:
         _meshes_filtrado = {n: m for n, m in _meshes_dict.items() if _visible_dict.get(n, True)}
         _fig_stl = create_plotly_3d(
-            _meshes_filtrado, _tissue_colors_stl, opacities=_opac_dict, clip_plane=_clip_mesial
+            _meshes_filtrado, _tissue_colors_stl, opacities=_opac_dict, clip_plane=None,
+            bbox_meshes=_meshes_dict,
         )
 
         if _revelar_interior and _stl_ok:
@@ -631,7 +549,6 @@ if _is_stl:
             margin=dict(l=0, r=0, t=0, b=0),
             scene=dict(
                 dragmode="orbit",
-                aspectmode="data",
                 xaxis=dict(title=dict(font=dict(size=18)), tickfont=dict(size=15)),
                 yaxis=dict(title=dict(font=dict(size=18)), tickfont=dict(size=15)),
                 zaxis=dict(title=dict(font=dict(size=18)), tickfont=dict(size=15)),
@@ -803,6 +720,11 @@ html,body{margin:0;padding:0;overflow:hidden;height:100%;background:#0f0f0f;colo
     });
 
     // ---- LOCK ----
+    // Restaura câmera do localStorage ao iniciar
+    try{var _lsc=localStorage.getItem('dcubic_stl_camera');
+      if(_lsc) Plotly.relayout(gd,{'scene.camera':JSON.parse(_lsc)});
+    }catch(e){}
+
     gd.on('plotly_relayout',function(ev){
       if(lockApplying) return;
       if(locked&&savedCamera&&ev['scene.camera']){
@@ -810,6 +732,7 @@ html,body{margin:0;padding:0;overflow:hidden;height:100%;background:#0f0f0f;colo
         Plotly.relayout(gd,{'scene.camera':savedCamera}).then(function(){lockApplying=false;});
       } else if(!locked&&ev['scene.camera']){
         savedCamera=JSON.parse(JSON.stringify(ev['scene.camera']));
+        try{localStorage.setItem('dcubic_stl_camera',JSON.stringify(savedCamera));}catch(e){}
       }
     });
 
@@ -821,6 +744,7 @@ html,body{margin:0;padding:0;overflow:hidden;height:100%;background:#0f0f0f;colo
       lb.textContent='🔓 LOCK';
       lb.classList.remove('on');
       savedCamera=JSON.parse(JSON.stringify(_defaultCam));
+      try{localStorage.setItem('dcubic_stl_camera',JSON.stringify(_defaultCam));}catch(e){}
       Plotly.relayout(gd,{'scene.dragmode':'orbit','scene.camera':_defaultCam});
     });
 
