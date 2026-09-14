@@ -277,14 +277,6 @@ def _compute_anatomy_cached(volume, spacing, crown_at_high, cervical_frac):
     return compute_anatomy(volume, spacing, crown_at_high=crown_at_high, cervical_frac=cervical_frac)
 
 
-st.sidebar.header("Dados")
-_uploads = st.sidebar.file_uploader(
-    "Carregar micro-CT (DICOM .dcm, TIFF .tif/.tiff, NIfTI .nii/.nii.gz) "
-    "ou malhas STL exportadas pelo Bruker CTAnalyser (.stl). "
-    "Para DICOM/TIFF, selecione TODOS os cortes de uma vez.",
-    type=["dcm", "tif", "tiff", "nii", "gz", "stl"],
-    accept_multiple_files=True,
-)
 
 # ---------------------------------------------------------------------------
 # MODO STL — ativado quando há pelo menos um .stl no upload OU quando o
@@ -308,12 +300,18 @@ else:
     _load_folder_btn = False
 
 # ---------------------------------------------------------------------------
-# DENTES DE EXEMPLO — download sob demanda do Google Drive
+# DENTES DE EXEMPLO — Drive (arquivo único) ou pasta local (múltiplas estruturas)
 # ---------------------------------------------------------------------------
 _DRIVE_SAMPLES = {
     "Esmalte": "1OmWWs6kaUc6bT3gD2jjHMFX41r1g_45P",
     "Dentina": "1_bbDyFS2QG9qL8xecflwTjuwlKVrjm7J",
     "Molar":   "1B9z0GMQzHxYegnGY69KLVuPs-U8m38gH",
+}
+_LOCAL_SAMPLES = {
+    "34-PRE":        "/Users/abeyuujirou/Desktop/DCUBIC-SITE/STL/34-PRE",
+    "MOLAR-SUP":     "/Users/abeyuujirou/Desktop/DCUBIC-SITE/STL/MOLAR-SUP",
+    "Pré-molar-sup": "/Users/abeyuujirou/Desktop/DCUBIC-SITE/STL/PRE-MOLAR-SUP",
+    "Incisivo":      "/Users/abeyuujirou/Desktop/DCUBIC-SITE/STL/INCISIVO",
 }
 _SAMPLE_DIR = "/tmp/dcubic_samples"
 
@@ -321,7 +319,7 @@ st.sidebar.markdown("---")
 st.sidebar.subheader("Dentes de exemplo")
 _sample_sel = st.sidebar.selectbox(
     "Estrutura de exemplo",
-    ["— selecione —"] + list(_DRIVE_SAMPLES.keys()),
+    ["— selecione —"] + list(_DRIVE_SAMPLES.keys()) + list(_LOCAL_SAMPLES.keys()),
     key="drive_sample_sel",
 )
 def _stl_valido(_p):
@@ -339,6 +337,26 @@ def _stl_valido(_p):
 if st.sidebar.button("Carregar dente de exemplo", key="drive_sample_btn"):
     if _sample_sel == "— selecione —":
         st.sidebar.warning("Selecione uma estrutura antes de carregar.")
+    elif _sample_sel in _LOCAL_SAMPLES:
+        _pasta = _LOCAL_SAMPLES[_sample_sel]
+        if not os.path.isdir(_pasta):
+            st.sidebar.warning(
+                f"Pasta '{_pasta}' não encontrada neste ambiente — "
+                "disponível apenas na máquina local do Dr. Abe."
+            )
+        else:
+            import glob as _glob_ex
+            _stls = sorted(_glob_ex.glob(os.path.join(_pasta, "*.stl")))
+            _stls += sorted(_glob_ex.glob(os.path.join(_pasta, "*.STL")))
+            _validos = [p for p in _stls if _stl_valido(p)]
+            if not _validos:
+                st.sidebar.warning(f"Nenhum STL válido encontrado em {_pasta}.")
+            else:
+                _existing = st.session_state.get("stl_paths", [])
+                _novos = [p for p in _validos if p not in _existing]
+                if _novos:
+                    st.session_state["stl_paths"] = _existing + _novos
+                st.rerun()
     else:
         _fid = _DRIVE_SAMPLES[_sample_sel]
         _dest = os.path.join(_SAMPLE_DIR, f"{_sample_sel}.stl")
@@ -371,29 +389,6 @@ if st.sidebar.button("Carregar dente de exemplo", key="drive_sample_btn"):
                 st.session_state["stl_paths"] = _existing_paths + [_dest]
             st.rerun()
 
-# Coletar STLs do upload — salva em /tmp e injeta em stl_paths (mesmo fluxo da pasta)
-_UPLOAD_DIR = "/tmp/dcubic_uploads"
-_UPLOAD_MAX_BYTES = 100 * 1024 * 1024  # 100 MB — limite de segurança para o Cloud
-os.makedirs(_UPLOAD_DIR, exist_ok=True)
-for _uf in (_uploads or []):
-    if _uf.name.lower().endswith(".stl"):
-        if _uf.size > _UPLOAD_MAX_BYTES:
-            st.sidebar.warning(
-                f"**{_uf.name}** ({_uf.size // (1024 * 1024)} MB) ultrapassa o limite de 100 MB "
-                "para upload nesta plataforma de demonstração. "
-                "Use um arquivo reduzido ou os dentes de exemplo disponíveis acima."
-            )
-            continue
-        _up_path = os.path.join(_UPLOAD_DIR, _uf.name)
-        _existing_paths = st.session_state.get("stl_paths", [])
-        if _up_path not in _existing_paths:
-            try:
-                with open(_up_path, "wb") as _fp:
-                    _fp.write(_uf.getvalue())
-                st.session_state["stl_paths"] = _existing_paths + [_up_path]
-            except Exception as _ue:
-                st.sidebar.warning(f"Upload ignorado ({_uf.name}): {_ue}")
-
 # Quando o botão for clicado: persiste apenas CAMINHOS em session_state.
 # Bytes (~1,3 GB) não são guardados — seriam copiados a cada rerun.
 if _load_folder_btn:
@@ -418,8 +413,6 @@ if _load_folder_btn:
             st.session_state.pop("_stl_selected", None)
 
 if st.sidebar.button("Limpar STL", key="stl_clear"):
-    import shutil as _shutil
-    _shutil.rmtree("/tmp/dcubic_uploads", ignore_errors=True)
     st.session_state.pop("stl_paths", None)
     st.session_state.pop("_stl_selected", None)
     st.session_state.pop("_stl_last", None)
@@ -470,8 +463,7 @@ if _is_stl:
             _cb(100, "Carregado do cache")
         else:
             _cb(25, "Lendo e decimando STL…")
-        _has_upload = any(_UPLOAD_DIR in _p for _p, _ in _stl_path_mtime_dedup)
-        _decimate_target = 50_000 if _has_upload else 200_000
+        _decimate_target = 200_000
         _mi_disk = _load_stl_from_paths(tuple(_stl_path_mtime_dedup), _decimate_target)
         if not _all_cached:
             _cb(100, "Pronto")
@@ -822,18 +814,7 @@ html,body{margin:0;padding:0;overflow:hidden;height:100%;background:#0f0f0f;colo
 # ---------------------------------------------------------------------------
 # MODO VOLUME (voxels) — comportamento original inalterado
 # ---------------------------------------------------------------------------
-if _uploads:
-    try:
-        _files = tuple((f.name, f.getvalue()) for f in _uploads)
-        vol_data = _load_uploaded_vol(_files)
-        st.sidebar.success(f"Volume carregado: {vol_data['source']}")
-    except Exception as _e:  # noqa: BLE001
-        st.sidebar.error(f"Falha ao carregar o arquivo: {_e}")
-        st.sidebar.info("Usando o volume sintetico (phantom).")
-        vol_data = _load_synthetic_vol()
-else:
-    st.sidebar.caption("Nenhum arquivo enviado - usando o volume sintetico (phantom).")
-    vol_data = _load_synthetic_vol()
+vol_data = _load_synthetic_vol()
 
 volume   = vol_data["volume"]
 Z, Y, X  = volume.shape
