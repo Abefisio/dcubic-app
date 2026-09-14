@@ -287,19 +287,15 @@ def _compute_anatomy_cached(volume, spacing, crown_at_high, cervical_frac):
 _LOCAL_DEFAULT = os.path.expanduser("~/Desktop/DCUBIC-SITE/STL")
 _local_available = os.path.isdir(_LOCAL_DEFAULT)
 
-# Garante que o campo volta ao default em cada nova sessão (anula cache do browser)
-if "_stl_folder_init" not in st.session_state:
-    st.session_state["_stl_folder_init"] = True
-    st.session_state["stl_folder_path"] = _LOCAL_DEFAULT
-
 if _local_available:
-    _stl_folder = st.sidebar.text_input(
-        "Pasta com STL (leitura local)",
-        key="stl_folder_path",
-    )
-    _load_folder_btn = st.sidebar.button("Carregar STL da pasta", key="stl_load_folder")
+    with st.sidebar.expander("Configurações avançadas", expanded=False):
+        _stl_folder = st.text_input(
+            "Pasta com STL (leitura local)",
+            placeholder="Caminho da pasta com arquivos .stl",
+            key="stl_folder_path",
+        )
+        _load_folder_btn = st.button("Carregar STL da pasta", key="stl_load_folder")
 else:
-    st.sidebar.info("Leitura de pasta local indisponível neste ambiente — use o upload de arquivos.")
     _stl_folder = ""
     _load_folder_btn = False
 
@@ -397,7 +393,7 @@ if st.sidebar.button("Carregar dente de exemplo", key="drive_sample_btn"):
 # Bytes (~1,3 GB) não são guardados — seriam copiados a cada rerun.
 if _load_folder_btn:
     import glob as _glob
-    _folder_path = _stl_folder.strip()
+    _folder_path = _stl_folder.strip() or _LOCAL_DEFAULT
     if not os.path.isdir(_folder_path):
         st.sidebar.warning(f"Pasta não encontrada: {_folder_path}")
     else:
