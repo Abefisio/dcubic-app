@@ -251,7 +251,7 @@ _arr_hash = lambda a: (a.shape, a.dtype.str, float(a.sum()))
 
 
 @st.cache_resource
-def _load_stl_from_paths(path_mtime_pairs):
+def _load_stl_from_paths(path_mtime_pairs, decimate_target: int = 200_000):
     """Carrega e decima STLs a partir de caminhos de disco.
 
     Usa cache_resource (sem serialização) — objetos PolyData mantidos na
@@ -268,7 +268,7 @@ def _load_stl_from_paths(path_mtime_pairs):
                 _cache_keys.append(os.path.splitext(_p)[0])
         except Exception:
             pass
-    return load_meshes(_files, cache_keys=_cache_keys)
+    return load_meshes(_files, cache_keys=_cache_keys, decimate_target=decimate_target)
 
 
 @st.cache_data(hash_funcs={np.ndarray: _arr_hash}, show_spinner=False)
@@ -283,14 +283,6 @@ def _compute_anatomy_cached(volume, spacing, crown_at_high, cervical_frac):
     return compute_anatomy(volume, spacing, crown_at_high=crown_at_high, cervical_frac=cervical_frac)
 
 
-st.sidebar.header("Dados")
-_uploads = st.sidebar.file_uploader(
-    "Carregar micro-CT (DICOM .dcm, TIFF .tif/.tiff, NIfTI .nii/.nii.gz) "
-    "ou malhas STL exportadas pelo Bruker CTAnalyser (.stl). "
-    "Para DICOM/TIFF, selecione TODOS os cortes de uma vez.",
-    type=["dcm", "tif", "tiff", "nii", "gz", "stl"],
-    accept_multiple_files=True,
-)
 
 # ---------------------------------------------------------------------------
 # MODO STL — ativado quando há pelo menos um .stl no upload OU quando o
@@ -298,28 +290,34 @@ _uploads = st.sidebar.file_uploader(
 # ---------------------------------------------------------------------------
 
 # Caminho A: leitura da pasta local — só disponível quando o diretório padrão existe.
-_LOCAL_DEFAULT = os.path.expanduser("~/Desktop/DCUBIC-SITE/MICROTOMO")
+_LOCAL_DEFAULT = os.path.expanduser("~/Desktop/DCUBIC-SITE/STL")
 _local_available = os.path.isdir(_LOCAL_DEFAULT)
 
 if _local_available:
-    _stl_folder = st.sidebar.text_input(
-        "Pasta com STL (leitura local)",
-        value=_LOCAL_DEFAULT,
-        key="stl_folder_path",
-    )
-    _load_folder_btn = st.sidebar.button("Carregar STL da pasta", key="stl_load_folder")
+    with st.sidebar.expander("Configurações avançadas", expanded=False):
+        _stl_folder = st.text_input(
+            "Pasta com STL (leitura local)",
+            placeholder="Caminho da pasta com arquivos .stl",
+            key="stl_folder_path",
+        )
+        _load_folder_btn = st.button("Carregar STL da pasta", key="stl_load_folder")
 else:
-    st.sidebar.info("Leitura de pasta local indisponível neste ambiente — use o upload de arquivos.")
     _stl_folder = ""
     _load_folder_btn = False
 
 # ---------------------------------------------------------------------------
-# DENTES DE EXEMPLO — download sob demanda do Google Drive
+# DENTES DE EXEMPLO — Drive (arquivo único) ou pasta local (múltiplas estruturas)
 # ---------------------------------------------------------------------------
 _DRIVE_SAMPLES = {
     "Esmalte": "1OmWWs6kaUc6bT3gD2jjHMFX41r1g_45P",
     "Dentina": "1_bbDyFS2QG9qL8xecflwTjuwlKVrjm7J",
     "Molar":   "1B9z0GMQzHxYegnGY69KLVuPs-U8m38gH",
+}
+_LOCAL_SAMPLES = {
+    "34-PRE":        "/Users/abeyuujirou/Desktop/DCUBIC-SITE/STL/34-PRE",
+    "MOLAR-SUP":     "/Users/abeyuujirou/Desktop/DCUBIC-SITE/STL/MOLAR-SUP",
+    "Pré-molar-sup": "/Users/abeyuujirou/Desktop/DCUBIC-SITE/STL/PRE-MOLAR-SUP",
+    "Incisivo":      "/Users/abeyuujirou/Desktop/DCUBIC-SITE/STL/INCISIVO",
 }
 _SAMPLE_DIR = "/tmp/dcubic_samples"
 
@@ -327,7 +325,7 @@ st.sidebar.markdown("---")
 st.sidebar.subheader("Dentes de exemplo")
 _sample_sel = st.sidebar.selectbox(
     "Estrutura de exemplo",
-    ["— selecione —"] + list(_DRIVE_SAMPLES.keys()),
+    ["— selecione —"] + list(_DRIVE_SAMPLES.keys()) + list(_LOCAL_SAMPLES.keys()),
     key="drive_sample_sel",
 )
 def _stl_valido(_p):
@@ -345,6 +343,26 @@ def _stl_valido(_p):
 if st.sidebar.button("Carregar dente de exemplo", key="drive_sample_btn"):
     if _sample_sel == "— selecione —":
         st.sidebar.warning("Selecione uma estrutura antes de carregar.")
+    elif _sample_sel in _LOCAL_SAMPLES:
+        _pasta = _LOCAL_SAMPLES[_sample_sel]
+        if not os.path.isdir(_pasta):
+            st.sidebar.warning(
+                f"Pasta '{_pasta}' não encontrada neste ambiente — "
+                "disponível apenas na máquina local do Dr. Abe."
+            )
+        else:
+            import glob as _glob_ex
+            _stls = sorted(_glob_ex.glob(os.path.join(_pasta, "*.stl")))
+            _stls += sorted(_glob_ex.glob(os.path.join(_pasta, "*.STL")))
+            _validos = [p for p in _stls if _stl_valido(p)]
+            if not _validos:
+                st.sidebar.warning(f"Nenhum STL válido encontrado em {_pasta}.")
+            else:
+                _existing = st.session_state.get("stl_paths", [])
+                _novos = [p for p in _validos if p not in _existing]
+                if _novos:
+                    st.session_state["stl_paths"] = _existing + _novos
+                st.rerun()
     else:
         _fid = _DRIVE_SAMPLES[_sample_sel]
         _dest = os.path.join(_SAMPLE_DIR, f"{_sample_sel}.stl")
@@ -377,20 +395,11 @@ if st.sidebar.button("Carregar dente de exemplo", key="drive_sample_btn"):
                 st.session_state["stl_paths"] = _existing_paths + [_dest]
             st.rerun()
 
-# Coletar STLs do upload — filtra apenas .stl, ignora outros formatos silenciosamente
-_stl_from_upload = []
-for _uf in (_uploads or []):
-    if _uf.name.lower().endswith(".stl"):
-        try:
-            _stl_from_upload.append((_uf.name, _uf.getvalue()))
-        except Exception as _ue:
-            st.sidebar.warning(f"Upload ignorado ({_uf.name}): {_ue}")
-
 # Quando o botão for clicado: persiste apenas CAMINHOS em session_state.
 # Bytes (~1,3 GB) não são guardados — seriam copiados a cada rerun.
 if _load_folder_btn:
     import glob as _glob
-    _folder_path = _stl_folder.strip()
+    _folder_path = _stl_folder.strip() or _LOCAL_DEFAULT
     if not os.path.isdir(_folder_path):
         st.sidebar.warning(f"Pasta não encontrada: {_folder_path}")
     else:
@@ -415,26 +424,27 @@ if st.sidebar.button("Limpar STL", key="stl_clear"):
     st.session_state.pop("_stl_last", None)
     st.rerun()
 
-# Seletor de arquivo único — renderiza somente se houver caminhos carregados.
-# Disco tem prioridade: quando há pasta, upload é ignorado.
+# Seletor de estruturas — unifica uploads e pasta na mesma lista
 _stl_path_mtime_dedup = []
-_stl_upload_dedup = []
 
 _opcoes = st.session_state.get("stl_paths", [])
 if _opcoes:
-    _stl_path_mtime_dedup = [
-        (p, os.path.getmtime(p)) for p in _opcoes if os.path.isfile(p)
-    ]
-    _key_now = tuple(p for p, _ in _stl_path_mtime_dedup)
-    if _key_now != st.session_state.get("_stl_last"):
+    _sel_paths = st.sidebar.multiselect(
+        "Estruturas a exibir",
+        options=_opcoes,
+        default=_opcoes,
+        format_func=lambda p: os.path.splitext(os.path.basename(p))[0],
+        key="_stl_selected",
+    )
+    _sel_tuple = tuple(sorted(_sel_paths))
+    if _sel_tuple != st.session_state.get("_stl_last"):
         _load_stl_from_paths.clear()
-        st.session_state["_stl_last"] = _key_now
-else:
-    # Upload: carrega todos os STLs enviados
-    if _stl_from_upload:
-        _stl_upload_dedup = _stl_from_upload
+        st.session_state["_stl_last"] = _sel_tuple
+    _stl_path_mtime_dedup = [
+        (_p, os.path.getmtime(_p)) for _p in _sel_paths if _p and os.path.isfile(_p)
+    ]
 
-_is_stl = bool(_stl_path_mtime_dedup or _stl_upload_dedup)
+_is_stl = bool(_stl_path_mtime_dedup)
 
 _revelar_interior = st.sidebar.checkbox("Revelar interior", value=True, key="revelar_interior")
 
@@ -450,22 +460,21 @@ if _is_stl:
     # cache-miss = 25% antes da chamada bloqueante, 100% após.
     _mi_disk = []
     if _stl_path_mtime_dedup:
-        _disk_cached = all(
-            os.path.isfile(os.path.splitext(p)[0] + ".dcubic_cache.ply")
-            and os.path.isfile(os.path.splitext(p)[0] + ".dcubic_cache.json")
-            for p, _ in _stl_path_mtime_dedup
+        _all_cached = all(
+            os.path.isfile(os.path.splitext(_p)[0] + ".dcubic_cache.ply")
+            and os.path.isfile(os.path.splitext(_p)[0] + ".dcubic_cache.json")
+            for _p, _ in _stl_path_mtime_dedup
         )
-        if _disk_cached:
+        if _all_cached:
             _cb(100, "Carregado do cache")
         else:
-            _cb(25, "Lendo e decimando STL")
-        _mi_disk = _load_stl_from_paths(tuple(_stl_path_mtime_dedup))
-        if not _disk_cached:
+            _cb(25, "Lendo e decimando STL…")
+        _decimate_target = 200_000
+        _mi_disk = _load_stl_from_paths(tuple(_stl_path_mtime_dedup), _decimate_target)
+        if not _all_cached:
             _cb(100, "Pronto")
 
-    # Upload: progress_cb funciona plenamente (sem camada de cache)
-    _mi_upload = load_meshes(_stl_upload_dedup, progress_cb=_cb) if _stl_upload_dedup else []
-    _meshes_info = _mi_disk + _mi_upload
+    _meshes_info = _mi_disk
     _prog.empty()
 
     _stl_errors = [m for m in _meshes_info if "error" in m]
@@ -504,10 +513,32 @@ if _is_stl:
         _meshes_dict[_mi["name"]] = _mi["mesh"]
         _opac_dict[_mi["name"]] = _OPAC_MAP.get(next((k for k in _OPAC_MAP if k in _nl), ""), 1.0)
 
+    # ── Botões de olho para visibilidade por estrutura ──
+    st.sidebar.markdown("---")
+    st.sidebar.subheader("Estruturas visíveis")
+    for _mi in _stl_ok:
+        _nome = _mi["name"]
+        _vkey = f"visivel_{_nome}"
+        if _vkey not in st.session_state:
+            st.session_state[_vkey] = True
+        _vis = st.session_state[_vkey]
+        if st.sidebar.button(
+            f"{'👁️' if _vis else '🚫'}  {_nome}",
+            key=f"btn_visivel_{_nome}",
+        ):
+            st.session_state[_vkey] = not _vis
+            st.rerun()
+    _visible_dict = {
+        _mi["name"]: st.session_state.get(f"visivel_{_mi['name']}", True)
+        for _mi in _stl_ok
+    }
+
     st.subheader("Render 3D — malhas STL")
     if _meshes_dict:
+        _meshes_filtrado = {n: m for n, m in _meshes_dict.items() if _visible_dict.get(n, True)}
         _fig_stl = create_plotly_3d(
-            _meshes_dict, _tissue_colors_stl, opacities=_opac_dict, clip_z_mm=None
+            _meshes_filtrado, _tissue_colors_stl, opacities=_opac_dict, clip_plane=None,
+            bbox_meshes=_meshes_dict,
         )
 
         if _revelar_interior and _stl_ok:
@@ -542,7 +573,6 @@ if _is_stl:
             margin=dict(l=0, r=0, t=0, b=0),
             scene=dict(
                 dragmode="orbit",
-                aspectmode="data",
                 xaxis=dict(title=dict(font=dict(size=18)), tickfont=dict(size=15)),
                 yaxis=dict(title=dict(font=dict(size=18)), tickfont=dict(size=15)),
                 zaxis=dict(title=dict(font=dict(size=18)), tickfont=dict(size=15)),
@@ -714,6 +744,11 @@ html,body{margin:0;padding:0;overflow:hidden;height:100%;background:#0f0f0f;colo
     });
 
     // ---- LOCK ----
+    // Restaura câmera do localStorage ao iniciar
+    try{var _lsc=localStorage.getItem('dcubic_stl_camera');
+      if(_lsc) Plotly.relayout(gd,{'scene.camera':JSON.parse(_lsc)});
+    }catch(e){}
+
     gd.on('plotly_relayout',function(ev){
       if(lockApplying) return;
       if(locked&&savedCamera&&ev['scene.camera']){
@@ -721,6 +756,7 @@ html,body{margin:0;padding:0;overflow:hidden;height:100%;background:#0f0f0f;colo
         Plotly.relayout(gd,{'scene.camera':savedCamera}).then(function(){lockApplying=false;});
       } else if(!locked&&ev['scene.camera']){
         savedCamera=JSON.parse(JSON.stringify(ev['scene.camera']));
+        try{localStorage.setItem('dcubic_stl_camera',JSON.stringify(savedCamera));}catch(e){}
       }
     });
 
@@ -732,6 +768,7 @@ html,body{margin:0;padding:0;overflow:hidden;height:100%;background:#0f0f0f;colo
       lb.textContent='🔓 LOCK';
       lb.classList.remove('on');
       savedCamera=JSON.parse(JSON.stringify(_defaultCam));
+      try{localStorage.setItem('dcubic_stl_camera',JSON.stringify(_defaultCam));}catch(e){}
       Plotly.relayout(gd,{'scene.dragmode':'orbit','scene.camera':_defaultCam});
     });
 
@@ -789,18 +826,7 @@ html,body{margin:0;padding:0;overflow:hidden;height:100%;background:#0f0f0f;colo
 # ---------------------------------------------------------------------------
 # MODO VOLUME (voxels) — comportamento original inalterado
 # ---------------------------------------------------------------------------
-if _uploads:
-    try:
-        _files = tuple((f.name, f.getvalue()) for f in _uploads)
-        vol_data = _load_uploaded_vol(_files)
-        st.sidebar.success(f"Volume carregado: {vol_data['source']}")
-    except Exception as _e:  # noqa: BLE001
-        st.sidebar.error(f"Falha ao carregar o arquivo: {_e}")
-        st.sidebar.info("Usando o volume sintetico (phantom).")
-        vol_data = _load_synthetic_vol()
-else:
-    st.sidebar.caption("Nenhum arquivo enviado - usando o volume sintetico (phantom).")
-    vol_data = _load_synthetic_vol()
+vol_data = _load_synthetic_vol()
 
 volume   = vol_data["volume"]
 Z, Y, X  = volume.shape
