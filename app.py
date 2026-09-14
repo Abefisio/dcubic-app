@@ -513,13 +513,23 @@ if _is_stl:
         _meshes_dict[_mi["name"]] = _mi["mesh"]
         _opac_dict[_mi["name"]] = 1.0
 
-    # ── Checkboxes de visibilidade por estrutura ──
+    # ── Botões de olho para visibilidade por estrutura ──
     st.sidebar.markdown("---")
     st.sidebar.subheader("Estruturas visíveis")
+    for _mi in _stl_ok:
+        _nome = _mi["name"]
+        _vkey = f"visivel_{_nome}"
+        if _vkey not in st.session_state:
+            st.session_state[_vkey] = True
+        _vis = st.session_state[_vkey]
+        if st.sidebar.button(
+            f"{'👁️' if _vis else '🚫'}  {_nome}",
+            key=f"btn_visivel_{_nome}",
+        ):
+            st.session_state[_vkey] = not _vis
+            st.rerun()
     _visible_dict = {
-        _mi["name"]: st.sidebar.checkbox(
-            f"Mostrar {_mi['name']}", value=True, key=f"visivel_{_mi['name']}"
-        )
+        _mi["name"]: st.session_state.get(f"visivel_{_mi['name']}", True)
         for _mi in _stl_ok
     }
 
