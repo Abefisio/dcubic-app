@@ -287,10 +287,14 @@ def _compute_anatomy_cached(volume, spacing, crown_at_high, cervical_frac):
 _LOCAL_DEFAULT = os.path.expanduser("~/Desktop/DCUBIC-SITE/STL")
 _local_available = os.path.isdir(_LOCAL_DEFAULT)
 
+# Garante que o campo volta ao default em cada nova sessão (anula cache do browser)
+if "_stl_folder_init" not in st.session_state:
+    st.session_state["_stl_folder_init"] = True
+    st.session_state["stl_folder_path"] = _LOCAL_DEFAULT
+
 if _local_available:
     _stl_folder = st.sidebar.text_input(
         "Pasta com STL (leitura local)",
-        value=_LOCAL_DEFAULT,
         key="stl_folder_path",
     )
     _load_folder_btn = st.sidebar.button("Carregar STL da pasta", key="stl_load_folder")
