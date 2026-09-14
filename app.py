@@ -306,18 +306,18 @@ else:
     _load_folder_btn = False
 
 # ---------------------------------------------------------------------------
-# DENTES DE EXEMPLO — Drive (arquivo único) ou pasta local (múltiplas estruturas)
+# DENTES DE EXEMPLO — Drive (arquivo único) ou Drive (zip com múltiplas estruturas)
 # ---------------------------------------------------------------------------
 _DRIVE_SAMPLES = {
     "Esmalte": "1OmWWs6kaUc6bT3gD2jjHMFX41r1g_45P",
     "Dentina": "1_bbDyFS2QG9qL8xecflwTjuwlKVrjm7J",
     "Molar":   "1B9z0GMQzHxYegnGY69KLVuPs-U8m38gH",
 }
-_LOCAL_SAMPLES = {
-    "34-PRE":        "/Users/abeyuujirou/Desktop/DCUBIC-SITE/STL/34-PRE",
-    "MOLAR-SUP":     "/Users/abeyuujirou/Desktop/DCUBIC-SITE/STL/MOLAR-SUP",
-    "Pré-molar-sup": "/Users/abeyuujirou/Desktop/DCUBIC-SITE/STL/PRE-MOLAR-SUP",
-    "Incisivo":      "/Users/abeyuujirou/Desktop/DCUBIC-SITE/STL/INCISIVO",
+_DRIVE_ZIP_SAMPLES = {
+    "34-PRE":        "1PZ7QYy2xVxSPrzCGysI_jqA58W5YJBV8",
+    "MOLAR-SUP":     "1uqU_6-O9MqrwWzavr74CJU_KQJIJWDV1",
+    "Pré-molar-sup": "1nELLBu4B1sQuFPFK1yWpyM2ix_42DF35",
+    "Incisivo":      "1he-TVm2aVnp3p6CT_JddtEj2rAySlX5g",
 }
 _SAMPLE_DIR = "/tmp/dcubic_samples"
 
@@ -325,7 +325,7 @@ st.sidebar.markdown("---")
 st.sidebar.subheader("Dentes de exemplo")
 _sample_sel = st.sidebar.selectbox(
     "Estrutura de exemplo",
-    ["— selecione —"] + list(_DRIVE_SAMPLES.keys()) + list(_LOCAL_SAMPLES.keys()),
+    ["— selecione —"] + list(_DRIVE_SAMPLES.keys()) + list(_DRIVE_ZIP_SAMPLES.keys()),
     key="drive_sample_sel",
 )
 def _stl_valido(_p):
@@ -343,13 +343,28 @@ def _stl_valido(_p):
 if st.sidebar.button("Carregar dente de exemplo", key="drive_sample_btn"):
     if _sample_sel == "— selecione —":
         st.sidebar.warning("Selecione uma estrutura antes de carregar.")
-    elif _sample_sel in _LOCAL_SAMPLES:
-        _pasta = _LOCAL_SAMPLES[_sample_sel]
-        if not os.path.isdir(_pasta):
-            st.sidebar.warning(
-                f"Pasta '{_pasta}' não encontrada neste ambiente — "
-                "disponível apenas na máquina local do Dr. Abe."
-            )
+    elif _sample_sel in _DRIVE_ZIP_SAMPLES:
+        _fid_zip = _DRIVE_ZIP_SAMPLES[_sample_sel]
+        _zip_dest = os.path.join(_SAMPLE_DIR, f"{_sample_sel}.zip")
+        _pasta = os.path.join(_SAMPLE_DIR, _sample_sel)
+        _erro_msg = ""
+        try:
+            import gdown, zipfile as _zf, glob as _glob_ex
+            os.makedirs(_SAMPLE_DIR, exist_ok=True)
+            with st.spinner("Baixando dente de exemplo…"):
+                if not os.path.isfile(_zip_dest):
+                    gdown.download(
+                        f"https://drive.google.com/uc?id={_fid_zip}",
+                        _zip_dest, quiet=True,
+                    )
+                if not os.path.isdir(_pasta) or not os.listdir(_pasta):
+                    os.makedirs(_pasta, exist_ok=True)
+                    with _zf.ZipFile(_zip_dest, "r") as _z:
+                        _z.extractall(_pasta)
+        except Exception as _e:
+            _erro_msg = str(_e)
+        if _erro_msg:
+            st.sidebar.error(f"Erro ao baixar/extrair: {_erro_msg[:300]}")
         else:
             import glob as _glob_ex
             _stls = sorted(_glob_ex.glob(os.path.join(_pasta, "*.stl")))
