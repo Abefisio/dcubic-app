@@ -33,8 +33,16 @@ def load_mesh(
     _ply = f"{cache_key}.dcubic_cache.ply" if cache_key else None
     _jsn = f"{cache_key}.dcubic_cache.json" if cache_key else None
 
-    # a) tentar ler cache de disco
-    if _ply and _jsn and os.path.isfile(_ply) and os.path.isfile(_jsn):
+    # a) tentar ler cache de disco — válido somente se cache >= mtime do .stl original
+    _stl_src = (cache_key + ".stl") if cache_key else None
+    _stl_mtime = os.path.getmtime(_stl_src) if (_stl_src and os.path.isfile(_stl_src)) else None
+    _ply_mtime = os.path.getmtime(_ply) if (_ply and os.path.isfile(_ply)) else None
+    _cache_valid = (
+        _ply and _jsn
+        and os.path.isfile(_ply) and os.path.isfile(_jsn)
+        and (_stl_mtime is None or (_ply_mtime is not None and _ply_mtime >= _stl_mtime))
+    )
+    if _cache_valid:
         try:
             mesh_display = pv.read(_ply)
             with open(_jsn, "r", encoding="utf-8") as _jf:
@@ -127,18 +135,19 @@ def load_mesh(
     }
 
 
-def load_meshes(files: list, *, cache_keys: list | None = None, progress_cb=None) -> list:
+def load_meshes(files: list, *, cache_keys: list | None = None, progress_cb=None, decimate_target: int | None = 200_000) -> list:
     """Carrega vários STL a partir de uma lista de (name, bytes).
 
     cache_keys: lista paralela de cache_key (str ou None) para cada arquivo.
     progress_cb: callback(pct, label) opcional repassado a load_mesh.
+    decimate_target: faces-alvo após decimação (None = sem decimação).
     Arquivos inválidos são registrados com chave 'error' e não interrompem os demais.
     """
     results = []
     for i, (name, data) in enumerate(files):
         ck = cache_keys[i] if cache_keys and i < len(cache_keys) else None
         try:
-            results.append(load_mesh(data, name, cache_key=ck, progress_cb=progress_cb))
+            results.append(load_mesh(data, name, cache_key=ck, progress_cb=progress_cb, decimate_target=decimate_target))
         except Exception as exc:
             results.append({"name": Path(name).stem, "error": str(exc)})
     return results

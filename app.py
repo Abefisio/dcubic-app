@@ -245,7 +245,7 @@ _arr_hash = lambda a: (a.shape, a.dtype.str, float(a.sum()))
 
 
 @st.cache_resource
-def _load_stl_from_paths(path_mtime_pairs):
+def _load_stl_from_paths(path_mtime_pairs, decimate_target: int = 200_000):
     """Carrega e decima STLs a partir de caminhos de disco.
 
     Usa cache_resource (sem serialização) — objetos PolyData mantidos na
@@ -262,7 +262,7 @@ def _load_stl_from_paths(path_mtime_pairs):
                 _cache_keys.append(os.path.splitext(_p)[0])
         except Exception:
             pass
-    return load_meshes(_files, cache_keys=_cache_keys)
+    return load_meshes(_files, cache_keys=_cache_keys, decimate_target=decimate_target)
 
 
 @st.cache_data(hash_funcs={np.ndarray: _arr_hash}, show_spinner=False)
@@ -371,14 +371,28 @@ if st.sidebar.button("Carregar dente de exemplo", key="drive_sample_btn"):
                 st.session_state["stl_paths"] = _existing_paths + [_dest]
             st.rerun()
 
-# Coletar STLs do upload — filtra apenas .stl, ignora outros formatos silenciosamente
-_stl_from_upload = []
+# Coletar STLs do upload — salva em /tmp e injeta em stl_paths (mesmo fluxo da pasta)
+_UPLOAD_DIR = "/tmp/dcubic_uploads"
+_UPLOAD_MAX_BYTES = 100 * 1024 * 1024  # 100 MB — limite de segurança para o Cloud
+os.makedirs(_UPLOAD_DIR, exist_ok=True)
 for _uf in (_uploads or []):
     if _uf.name.lower().endswith(".stl"):
-        try:
-            _stl_from_upload.append((_uf.name, _uf.getvalue()))
-        except Exception as _ue:
-            st.sidebar.warning(f"Upload ignorado ({_uf.name}): {_ue}")
+        if _uf.size > _UPLOAD_MAX_BYTES:
+            st.sidebar.warning(
+                f"**{_uf.name}** ({_uf.size // (1024 * 1024)} MB) ultrapassa o limite de 100 MB "
+                "para upload nesta plataforma de demonstração. "
+                "Use um arquivo reduzido ou os dentes de exemplo disponíveis acima."
+            )
+            continue
+        _up_path = os.path.join(_UPLOAD_DIR, _uf.name)
+        _existing_paths = st.session_state.get("stl_paths", [])
+        if _up_path not in _existing_paths:
+            try:
+                with open(_up_path, "wb") as _fp:
+                    _fp.write(_uf.getvalue())
+                st.session_state["stl_paths"] = _existing_paths + [_up_path]
+            except Exception as _ue:
+                st.sidebar.warning(f"Upload ignorado ({_uf.name}): {_ue}")
 
 # Quando o botão for clicado: persiste apenas CAMINHOS em session_state.
 # Bytes (~1,3 GB) não são guardados — seriam copiados a cada rerun.
@@ -404,15 +418,15 @@ if _load_folder_btn:
             st.session_state.pop("_stl_selected", None)
 
 if st.sidebar.button("Limpar STL", key="stl_clear"):
+    import shutil as _shutil
+    _shutil.rmtree("/tmp/dcubic_uploads", ignore_errors=True)
     st.session_state.pop("stl_paths", None)
     st.session_state.pop("_stl_selected", None)
     st.session_state.pop("_stl_last", None)
     st.rerun()
 
-# Seletor de arquivo único — renderiza somente se houver caminhos carregados.
-# Disco tem prioridade: quando há pasta, upload é ignorado.
+# Seletor de estruturas — unifica uploads e pasta na mesma lista
 _stl_path_mtime_dedup = []
-_stl_upload_dedup = []
 
 _opcoes = st.session_state.get("stl_paths", [])
 if _opcoes:
@@ -430,12 +444,8 @@ if _opcoes:
     _stl_path_mtime_dedup = [
         (_p, os.path.getmtime(_p)) for _p in _sel_paths if _p and os.path.isfile(_p)
     ]
-else:
-    # Upload: usa o primeiro STL enviado
-    if _stl_from_upload:
-        _stl_upload_dedup = _stl_from_upload[:1]
 
-_is_stl = bool(_stl_path_mtime_dedup or _stl_upload_dedup)
+_is_stl = bool(_stl_path_mtime_dedup)
 
 _revelar_interior = st.sidebar.checkbox("Revelar interior", value=False, key="revelar_interior")
 
@@ -460,13 +470,13 @@ if _is_stl:
             _cb(100, "Carregado do cache")
         else:
             _cb(25, "Lendo e decimando STL…")
-        _mi_disk = _load_stl_from_paths(tuple(_stl_path_mtime_dedup))
+        _has_upload = any(_UPLOAD_DIR in _p for _p, _ in _stl_path_mtime_dedup)
+        _decimate_target = 50_000 if _has_upload else 200_000
+        _mi_disk = _load_stl_from_paths(tuple(_stl_path_mtime_dedup), _decimate_target)
         if not _all_cached:
             _cb(100, "Pronto")
 
-    # Upload: progress_cb funciona plenamente (sem camada de cache)
-    _mi_upload = load_meshes(_stl_upload_dedup, progress_cb=_cb) if _stl_upload_dedup else []
-    _meshes_info = _mi_disk + _mi_upload
+    _meshes_info = _mi_disk
     _prog.empty()
 
     _stl_errors = [m for m in _meshes_info if "error" in m]
