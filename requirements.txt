@@ -8,6 +8,7 @@ nibabel>=5.2.0
 pyvista>=0.43.0
 plotly>=5.18.0
 reportlab>=4.0.0
+extra-streamlit-components>=0.1.71
 streamlit-authenticator==0.4.2
 pyyaml>=6.0
 bcrypt>=4.0.0

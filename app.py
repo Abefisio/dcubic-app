@@ -5,10 +5,16 @@ Análise de volumes 3D micro-CT — USP/FOUSP — Pesquisa acadêmica
 
 import json
 import os
-import yaml
+import traceback as _tb
 import streamlit as st
 import numpy as np
-import extra_streamlit_components as stx
+
+try:
+    import yaml
+    import extra_streamlit_components as stx
+except Exception as _e_top:
+    st.error(f"**Erro de inicialização — contate o suporte:**\n```\n{_tb.format_exc()}\n```")
+    st.stop()
 
 # Patch: extra-streamlit-components 0.1.81 cria um novo CookieManager (e
 # renderiza um componente iframe) a cada rerun, causando um loop infinito de
@@ -416,26 +422,21 @@ _stl_upload_dedup = []
 
 _opcoes = st.session_state.get("stl_paths", [])
 if _opcoes:
-    _sel_path = st.sidebar.selectbox(
-        "Estrutura a exibir",
-        options=_opcoes,
-        format_func=lambda p: os.path.splitext(os.path.basename(p))[0],
-        key="_stl_selected",
-    )
-    if _sel_path != st.session_state.get("_stl_last"):
-        _load_stl_from_paths.clear()
-        st.session_state["_stl_last"] = _sel_path
     _stl_path_mtime_dedup = [
-        (_sel_path, os.path.getmtime(_sel_path))
-    ] if _sel_path and os.path.isfile(_sel_path) else []
+        (p, os.path.getmtime(p)) for p in _opcoes if os.path.isfile(p)
+    ]
+    _key_now = tuple(p for p, _ in _stl_path_mtime_dedup)
+    if _key_now != st.session_state.get("_stl_last"):
+        _load_stl_from_paths.clear()
+        st.session_state["_stl_last"] = _key_now
 else:
-    # Upload: usa o primeiro STL enviado
+    # Upload: carrega todos os STLs enviados
     if _stl_from_upload:
-        _stl_upload_dedup = _stl_from_upload[:1]
+        _stl_upload_dedup = _stl_from_upload
 
 _is_stl = bool(_stl_path_mtime_dedup or _stl_upload_dedup)
 
-_revelar_interior = st.sidebar.checkbox("Revelar interior", value=False, key="revelar_interior")
+_revelar_interior = st.sidebar.checkbox("Revelar interior", value=True, key="revelar_interior")
 
 if _is_stl:
     _prog = st.progress(0, text="Preparando…")
@@ -449,10 +450,10 @@ if _is_stl:
     # cache-miss = 25% antes da chamada bloqueante, 100% após.
     _mi_disk = []
     if _stl_path_mtime_dedup:
-        _sel_base = os.path.splitext(_stl_path_mtime_dedup[0][0])[0]
-        _disk_cached = (
-            os.path.isfile(_sel_base + ".dcubic_cache.ply")
-            and os.path.isfile(_sel_base + ".dcubic_cache.json")
+        _disk_cached = all(
+            os.path.isfile(os.path.splitext(p)[0] + ".dcubic_cache.ply")
+            and os.path.isfile(os.path.splitext(p)[0] + ".dcubic_cache.json")
+            for p, _ in _stl_path_mtime_dedup
         )
         if _disk_cached:
             _cb(100, "Carregado do cache")
@@ -479,16 +480,18 @@ if _is_stl:
         st.error("Nenhuma malha STL válida foi carregada.")
         st.stop()
 
-    # Cores iniciais por estrutura (match no nome, case-insensitive); fallback por índice.
+    # Cores e opacidades por estrutura (match no nome, case-insensitive); fallback por índice.
+    # Esmalte/Dentina/molar/raiz = translúcidos (casca externa); canal = opaco (camada interna).
     _STL_COLOR_MAP = {
         "esmalte": (230, 235, 240),
-        "dentina": (220, 200, 150),
-        "molar":   (200, 170, 140),
-        "raiz":    (200, 170, 140),
-        "canal":   (180, 120, 100),
+        "dentina": (170, 180, 190),
+        "molar":   (170, 175, 185),
+        "raiz":    (170, 175, 185),
+        "canal":   (90,  70,  220),
     }
+    _OPAC_MAP = {"esmalte": 0.15, "dentina": 0.22, "molar": 0.22, "raiz": 0.22}
     _PALETTE = [
-        (230, 235, 240), (220, 200, 150), (200, 170, 140),
+        (230, 235, 240), (170, 180, 190), (170, 175, 185),
         (170, 200, 220), (220, 170, 200), (170, 220, 190),
     ]
     _meshes_dict = {}
@@ -499,7 +502,7 @@ if _is_stl:
         _col = next((v for k, v in _STL_COLOR_MAP.items() if k in _nl), _PALETTE[_vi % len(_PALETTE)])
         _tissue_colors_stl[_mi["name"]] = _col
         _meshes_dict[_mi["name"]] = _mi["mesh"]
-        _opac_dict[_mi["name"]] = 1.0
+        _opac_dict[_mi["name"]] = _OPAC_MAP.get(next((k for k in _OPAC_MAP if k in _nl), ""), 1.0)
 
     st.subheader("Render 3D — malhas STL")
     if _meshes_dict:
@@ -510,7 +513,11 @@ if _is_stl:
         if _revelar_interior and _stl_ok:
             try:
                 from modules.mesh_fill import preencher_interior
-                _casca_pv = _stl_ok[0]["mesh"]
+                _casca_mi = next(
+                    (m for m in _stl_ok if any(k in m["name"].lower() for k in ("molar", "raiz"))),
+                    max(_stl_ok, key=lambda m: m["mesh"].n_cells),
+                )
+                _casca_pv = _casca_mi["mesh"]
                 _interior = preencher_interior(_casca_pv, resolucao=128)
                 if _interior is not None:
                     import plotly.graph_objects as _go
