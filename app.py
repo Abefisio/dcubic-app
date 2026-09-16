@@ -364,6 +364,17 @@ if st.sidebar.button("Carregar dente de exemplo", key="drive_sample_btn"):
             _stls = sorted(_glob_ex.glob(os.path.join(_pasta, "*.stl")))
             _stls += sorted(_glob_ex.glob(os.path.join(_pasta, "*.STL")))
             _validos = [p for p in _stls if _stl_valido(p)]
+            # ponytail: 30 MB ceiling — arquivos maiores crasham o Cloud (1 GB RAM);
+            # remova quando o ZIP do Drive for re-exportado com meshes menores.
+            _grandes = [p for p in _validos if os.path.getsize(p) > 30 * 1024 * 1024]
+            for _pg in _grandes:
+                _mb = os.path.getsize(_pg) // 1024 // 1024
+                st.sidebar.warning(
+                    f"⚠️ '{os.path.basename(_pg)}' ({_mb} MB) é grande demais "
+                    "para o Streamlit Cloud e foi ignorado. "
+                    "Faça upload manual do STL se precisar desta estrutura."
+                )
+            _validos = [p for p in _validos if p not in _grandes]
             if not _validos:
                 st.sidebar.warning(f"Nenhum STL válido encontrado em {_pasta}.")
             else:
