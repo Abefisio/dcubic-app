@@ -191,6 +191,11 @@ if _auth_status is not True:
     st.stop()
 
 # Login bem-sucedido — exibe o app abaixo
+st.sidebar.markdown(
+    "<p style='margin:0 0 2px 0;font-size:21px;font-weight:700;letter-spacing:-.01em'>DCubic Image System</p>"
+    "<p style='margin:0 0 8px 0;font-size:36px;font-style:italic;color:#fff;font-family:'Times New Roman',Times,serif'><b>STL</b> Render <b>3D</b></p>",
+    unsafe_allow_html=True,
+)
 authenticator.logout(location="sidebar")
 st.sidebar.caption(f"Logado como: {st.session_state.get('name', '')}")
 
@@ -205,13 +210,6 @@ st.markdown(
     "</style>",
     unsafe_allow_html=True,
 )
-if not st.session_state.get("stl_paths"):
-    st.markdown(
-        "<h4 style='margin:0;text-align:left'>DCubic Image System Platform</h4>",
-        unsafe_allow_html=True,
-    )
-
-
 @st.cache_data(show_spinner=False)
 def _load_synthetic_vol():
     return load_volume(synthetic=True)
@@ -591,28 +589,6 @@ if _is_stl:
                 yaxis=dict(title=dict(font=dict(size=18)), tickfont=dict(size=15)),
                 zaxis=dict(title=dict(font=dict(size=18)), tickfont=dict(size=15)),
             ),
-            updatemenus=[dict(
-                type="buttons",
-                direction="right",
-                x=0,
-                y=1.08,
-                showactive=False,
-                buttons=[
-                    dict(label="Topo",
-                         method="relayout",
-                         args=[{"scene.camera.eye": {"x": 0, "y": 0, "z": 2.2},
-                                "scene.camera.up":  {"x": 0, "y": 1, "z": 0}}]),
-                    dict(label="Frente",
-                         method="relayout",
-                         args=[{"scene.camera.eye": {"x": 0, "y": -2.2, "z": 0}}]),
-                    dict(label="Lado",
-                         method="relayout",
-                         args=[{"scene.camera.eye": {"x": 2.2, "y": 0, "z": 0}}]),
-                    dict(label="Perspectiva",
-                         method="relayout",
-                         args=[{"scene.camera.eye": {"x": 1.5, "y": 1.5, "z": 1.2}}]),
-                ],
-            )],
         )
         # Render via iframe HTML: todos os controles em JS puro — sem rerun.
         import streamlit.components.v1 as _components
@@ -684,6 +660,12 @@ html,body{margin:0;padding:0;overflow:hidden;height:100%;background:#0f0f0f;colo
   </div>
 
   <p class="sec-label">VISTA</p>
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px;margin-bottom:4px">
+    <button class="act-btn" id="camTopo">Topo</button>
+    <button class="act-btn" id="camFrente">Frente</button>
+    <button class="act-btn" id="camLado">Lado</button>
+    <button class="act-btn" id="camPersp">Perspectiva</button>
+  </div>
   <button class="act-btn" id="resetViewBtn">&#x1F3E0; Resetar vista</button>
   <button class="act-btn" id="downloadBtn">&#x1F4F7; Baixar imagem</button>
 </div>
@@ -772,6 +754,22 @@ html,body{margin:0;padding:0;overflow:hidden;height:100%;background:#0f0f0f;colo
         savedCamera=JSON.parse(JSON.stringify(ev['scene.camera']));
         try{localStorage.setItem('dcubic_stl_camera',JSON.stringify(savedCamera));}catch(e){}
       }
+    });
+
+    // ---- Presets de câmera ----
+    var _camPresets={
+      camTopo:    {eye:{x:0,y:0,z:2.2},up:{x:0,y:1,z:0},center:{x:0,y:0,z:0}},
+      camFrente:  {eye:{x:0,y:-2.2,z:0},up:{x:0,y:0,z:1},center:{x:0,y:0,z:0}},
+      camLado:    {eye:{x:2.2,y:0,z:0},up:{x:0,y:0,z:1},center:{x:0,y:0,z:0}},
+      camPersp:   {eye:{x:1.5,y:1.5,z:1.2},up:{x:0,y:0,z:1},center:{x:0,y:0,z:0}},
+    };
+    ['camTopo','camFrente','camLado','camPersp'].forEach(function(id){
+      document.getElementById(id).addEventListener('click',function(){
+        var cam=_camPresets[id];
+        savedCamera=JSON.parse(JSON.stringify(cam));
+        try{localStorage.setItem('dcubic_stl_camera',JSON.stringify(cam));}catch(e){}
+        Plotly.relayout(gd,{'scene.camera':cam});
+      });
     });
 
     // ---- Resetar vista ----
