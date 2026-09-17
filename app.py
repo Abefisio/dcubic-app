@@ -583,6 +583,7 @@ if _is_stl:
             modebar=dict(orientation="v"),
             height=850,
             margin=dict(l=0, r=0, t=0, b=0),
+            legend=dict(x=0, y=0, xanchor="left", yanchor="bottom"),
             scene=dict(
                 dragmode="orbit",
                 xaxis=dict(title=dict(font=dict(size=18)), tickfont=dict(size=15)),
