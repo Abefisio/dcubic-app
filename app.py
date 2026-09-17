@@ -205,10 +205,11 @@ st.markdown(
     "</style>",
     unsafe_allow_html=True,
 )
-st.markdown(
-    "<h4 style='margin:0;text-align:left'>DCubic Image System Platform</h4>",
-    unsafe_allow_html=True,
-)
+if not st.session_state.get("stl_paths"):
+    st.markdown(
+        "<h4 style='margin:0;text-align:left'>DCubic Image System Platform</h4>",
+        unsafe_allow_html=True,
+    )
 
 
 @st.cache_data(show_spinner=False)
@@ -551,7 +552,6 @@ if _is_stl:
         for _mi in _stl_ok
     }
 
-    st.subheader("Render 3D — malhas STL")
     if _meshes_dict:
         _meshes_filtrado = {n: m for n, m in _meshes_dict.items() if _visible_dict.get(n, True)}
         _fig_stl = create_plotly_3d(
@@ -583,7 +583,7 @@ if _is_stl:
         _fig_stl.update_layout(
             uirevision="constant",  # preserva câmera entre reruns do Streamlit
             modebar=dict(orientation="v"),
-            height=1156,
+            height=850,
             margin=dict(l=0, r=0, t=0, b=0),
             scene=dict(
                 dragmode="orbit",
@@ -816,7 +816,7 @@ html,body{margin:0;padding:0;overflow:hidden;height:100%;background:#0f0f0f;colo
             + _plot_frag
             + "</body></html>"
         )
-        _components.html(_full_html, height=1250, scrolling=False)
+        _components.html(_full_html, height=950, scrolling=False)
     else:
         st.info("Ative ao menos uma estrutura na barra lateral para visualizar.")
 
