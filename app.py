@@ -283,6 +283,14 @@ def _compute_anatomy_cached(volume, spacing, crown_at_high, cervical_frac):
     return compute_anatomy(volume, spacing, crown_at_high=crown_at_high, cervical_frac=cervical_frac)
 
 
+@st.cache_resource(show_spinner="Gerando interior…")
+def _interior_cached(_mesh, chave, resolucao: int = 128):
+    """Preenchimento interno (voxelização) — calcula 1x por malha, não a cada rerun.
+    _mesh não é hasheado (PolyData); a chave identifica a malha."""
+    from modules.mesh_fill import preencher_interior
+    return preencher_interior(_mesh, resolucao=resolucao)
+
+
 
 # ---------------------------------------------------------------------------
 # MODO STL — ativado quando há pelo menos um .stl no upload OU quando o
@@ -569,13 +577,16 @@ if _is_stl:
 
         if _revelar_interior and _stl_ok:
             try:
-                from modules.mesh_fill import preencher_interior
                 _casca_mi = next(
                     (m for m in _stl_ok if any(k in m["name"].lower() for k in ("molar", "raiz"))),
                     max(_stl_ok, key=lambda m: m["mesh"].n_cells),
                 )
                 _casca_pv = _casca_mi["mesh"]
-                _interior = preencher_interior(_casca_pv, resolucao=128)
+                _interior = _interior_cached(
+                    _casca_pv,
+                    (_casca_mi["name"], _casca_pv.n_points, _casca_pv.n_cells, tuple(_casca_pv.bounds)),
+                    128,
+                )
                 if _interior is not None:
                     import plotly.graph_objects as _go
                     _verts_i = _interior.points
