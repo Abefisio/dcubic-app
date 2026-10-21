@@ -44,7 +44,9 @@ TRABALHO_MB = 150
 BYTES_APP_POR_TRIANGULO = 400
 LIMITE_LOCAL_MB = 2048   # teto local: servidor iniciado com --server.maxUploadSize 2048 (docs/DECISOES.md)
 LIMITE_SEGURO_MB = int(os.environ.get("DCUBIC_LIMITE_MEMORIA_MB", "800"))
-LIMITE_MEMBRO_ZIP = 2 * 1024 ** 3   # recusa membros de zip acima de 2 GB descompactados
+LIMITE_MEMBRO_ZIP = 2 * 1024 ** 3   # recusa zip acima de 2 GB descompactados (por membro e na soma)
+# STL real comprime ~3–10:1 (zip de teste com 2 STL: 4,6:1); 1000:1 é "zip-bomba" (Fase 1: 51 KB -> 52 MB).
+RAZAO_MAX_ZIP = 100
 PASTA_CACHE = os.path.join(tempfile.gettempdir(), "dcubic_upload_cache")
 _K_GRADE = 2.4   # triângulos ≈ _K_GRADE * área / célula² (agrupamento de vértices; calibrável)
 
@@ -131,34 +133,70 @@ def _gravar(origem, pasta: str):
     os.makedirs(destino_dir, exist_ok=True)
     h = hashlib.sha1()
     fd, tmp = tempfile.mkstemp(dir=destino_dir, suffix=".part")
-    with os.fdopen(fd, "wb") as f:
-        shutil.copyfileobj(origem, _GravadorComHash(f, h), 1024 * 1024)
+    try:
+        with os.fdopen(fd, "wb") as f:
+            shutil.copyfileobj(origem, _GravadorComHash(f, h), 1024 * 1024)
+    except BaseException:
+        _apagar(tmp)   # disco cheio / zip corrompido: não deixa .part para trás
+        raise
     sha = h.hexdigest()
     final = os.path.join(destino_dir, sha + ".stl")
     os.replace(tmp, final)
     return final, sha, os.path.getsize(final)
 
 
+def _stls_do_zip(z):
+    """Membros .stl que serão extraídos (sem pastas, __MACOSX e arquivos ocultos)."""
+    for m in z.infolist():
+        base = os.path.basename(m.filename)   # basename: sem caminhos do zip
+        if not (m.is_dir() or "__MACOSX" in m.filename or base.startswith(".")
+                or not base.lower().endswith(".stl")):
+            yield base, m
+
+
+def _checar_zip(z, pasta: str) -> None:
+    """Antes de extrair (envio direto e Drive): recusa membro ou soma acima de 2 GB descompactados,
+    compressão anormal (zip-bomba) e falta de disco (1,1 × soma descompactada > espaço livre)."""
+    membros = [m for _b, m in _stls_do_zip(z)]
+    for m in membros:
+        base = os.path.basename(m.filename)
+        if m.file_size > LIMITE_MEMBRO_ZIP:
+            raise ValueError(f"'{base}' tem mais de 2 GB descompactado.")
+        if m.file_size > 1024 ** 2 and m.file_size > RAZAO_MAX_ZIP * max(m.compress_size, 1):
+            raise ValueError(f"'{base}' tem compressão anormal ({m.file_size // max(m.compress_size, 1)}:1) e "
+                             "não parece um STL de verdade (possível \"zip-bomba\"). O .zip foi recusado: "
+                             "envie os arquivos .stl originais, compactados normalmente.")
+    precisa = sum(m.file_size for m in membros)
+    if precisa > LIMITE_MEMBRO_ZIP:
+        raise ValueError(f"O .zip descompactado tem {precisa / 1024 ** 2:.0f} MB e passa do limite de 2 GB.")
+    os.makedirs(pasta, exist_ok=True)
+    livre = shutil.disk_usage(pasta).free
+    if 1.1 * precisa > livre:
+        raise ValueError(f"Espaço em disco insuficiente no servidor: o .zip descompactado tem "
+                         f"{precisa / 1024 ** 2:.0f} MB e há {livre / 1024 ** 2:.0f} MB livres.")
+
+
 def receber(envios, pasta: str = PASTA_CACHE):
-    """envios: objetos-arquivo com .name (.stl ou .zip). -> lista (nome, caminho, sha1, bytes)."""
+    """envios: objetos-arquivo com .name (.stl ou .zip). -> lista (nome, caminho, sha1, bytes).
+    Em qualquer erro, apaga o que este envio já gravou em recebidos/ e repassa o erro."""
     recebidos = []
-    for arq in envios:
-        nome = os.path.basename(arq.name)
-        if hasattr(arq, "seek"):
-            arq.seek(0)
-        if nome.lower().endswith(".zip"):
-            with zipfile.ZipFile(arq) as z:
-                for m in z.infolist():
-                    base = os.path.basename(m.filename)   # basename: sem caminhos do zip
-                    if m.is_dir() or "__MACOSX" in m.filename or base.startswith(".") \
-                            or not base.lower().endswith(".stl"):
-                        continue
-                    if m.file_size > LIMITE_MEMBRO_ZIP:
-                        raise ValueError(f"'{base}' tem mais de 2 GB descompactado.")
-                    with z.open(m) as src:
-                        recebidos.append((base, *_gravar(src, pasta)))
-        elif nome.lower().endswith(".stl"):
-            recebidos.append((nome, *_gravar(arq, pasta)))
+    try:
+        for arq in envios:
+            nome = os.path.basename(arq.name)
+            if hasattr(arq, "seek"):
+                arq.seek(0)
+            if nome.lower().endswith(".zip"):
+                with zipfile.ZipFile(arq) as z:
+                    _checar_zip(z, pasta)
+                    for base, m in _stls_do_zip(z):
+                        with z.open(m) as src:
+                            recebidos.append((base, *_gravar(src, pasta)))
+            elif nome.lower().endswith(".stl"):
+                recebidos.append((nome, *_gravar(arq, pasta)))
+    except BaseException:
+        for _nome, cam, _sha, _tam in recebidos:
+            _apagar(cam)
+        raise
     return recebidos
 
 
@@ -250,14 +288,7 @@ def receber_baixado(caminho: str, pasta: str = PASTA_CACHE, progresso=None):
     try:
         with open(caminho, "rb") as f:
             eh_zip = f.read(4) == b"PK\x03\x04"
-        if eh_zip:
-            with zipfile.ZipFile(caminho) as z:
-                precisa = sum(m.file_size for m in z.infolist() if m.filename.lower().endswith(".stl"))
-            livre = shutil.disk_usage(os.path.dirname(os.path.realpath(caminho))).free
-            if 1.1 * precisa > livre:
-                raise ValueError(f"Espaço em disco insuficiente no servidor: o .zip descompactado tem "
-                                 f"{precisa / 1024 ** 2:.0f} MB e há {livre / 1024 ** 2:.0f} MB livres.")
-        else:
+        if not eh_zip:   # .zip: limites, razão e disco checados em receber() (_checar_zip)
             try:
                 tipo_stl(caminho)
             except (ValueError, struct.error):

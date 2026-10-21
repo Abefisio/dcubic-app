@@ -22,3 +22,8 @@ Itens 1, 2, 3, 4, 5, 7, 9 e 10 (este sob a forma de carregamento sob demanda) da
 cd ~/Developer/dcubic-app-repo
 env -u PYTHONDONTWRITEBYTECODE python3 -m streamlit run app.py --server.headless true --server.port 8501 --server.address 127.0.0.1 --server.maxUploadSize 2048
 ```
+
+### Item 2 — Zip-bomba no envio direto de .zip
+
+- A checagem que só existia no caminho do Drive passou para `receber()` (`_checar_zip`), usada pelo envio direto e pelo Drive: soma descompactada ≤ 2 GB, `1,1 × soma ≤ espaço livre` e, por membro acima de 1 MB, razão de compressão ≤ 100:1 (`RAZAO_MAX_ZIP`). A razão foi acrescentada porque o zip de teste da Fase 1 (51 KB → 52 MB) passaria pelas checagens de soma e de disco; um zip real com 2 STL teve 4,6:1.
+- Em qualquer erro, `receber()` apaga o que aquele envio já gravou em `recebidos/` (e `_gravar` apaga o `.part` incompleto). A correção ficou na função comum, e não em `app.py`, para valer também no Drive.
