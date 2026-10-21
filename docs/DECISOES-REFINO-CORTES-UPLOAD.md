@@ -59,3 +59,93 @@ que a div. Decisões (feitas no worktree `refino/correcao-camera`, a integrar à
   cortes batam com o modelo.
 - **Bloco 3:** recriar o `st.file_uploader` (removido no commit 1c63048) sem usar o caminho atual de
   `mesh_loader`, que faz `fh.read()` do arquivo inteiro.
+
+## Bloco 2 — Cortes (slices) ortogonais do STL
+
+- **Módulo:** `modules/slices.py` (trimesh + shapely + Pillow). Interseção malha x plano (`section` -> `to_planar` -> `polygons_full`, respeitando furos), rasterização em PNG (~512 px, fundo preto, fora para dentro).
+- **Convenção de eixos:** idêntica à de `viewer3d.create_plotly_3d` (Plotly x = coluna 2, y = coluna 1, z = coluna 0 dos pontos). As malhas são reordenadas para (x, y, z) do Plotly e o enrolamento das faces é invertido (a troca de eixos é uma reflexão). Axial = plano z, Coronal = plano y, Sagital = plano x. Observação: por essa convenção, o eixo longo do dente nos STL de exemplo cai em x (Sagital), e não em z.
+- **Unidades:** os STL estão em unidades nativas (calibração de voxel pendente; extensão ~1400 un.). A régua e os sliders usam `slices.UNIDADE = "un."`; trocar para "mm" quando houver calibração.
+- **Ordem de desenho:** por nome conhecido (Esmalte -> Dentina/Molar/Raiz -> Polpa/Canal); nomes desconhecidos, maior área primeiro. Furos da máscara revelam a camada de baixo.
+- **Cache/memória:** `_trimesh_cached` (cache_resource, 1x por arquivo+mtime) e `_corte_cached` (cache_data; chave = arquivos+mtime, visíveis, eixo, posição em passos de 0,05). Acima de `LIMITE_FACES` (1.000.000 faces originais) usa-se a malha já decimada do `mesh_loader` — recurso provisório; o Bloco 3 (compactação) o substituirá.
+- **Interface:** `st.tabs(["3D", "Cortes"])`; a aba Cortes tem 3 painéis (st.columns, empilham em tela estreita), slider por eixo (limites = bbox combinado), aviso "Fora do dente nesta posição" quando não há interseção. Respeita `_visible_dict`.
+- **Plano no 3D:** opção "Mostrar plano no 3D" + eixo. Reaproveita `create_plotly_3d(clip_plane=...)`: o modelo é recortado na posição do corte (eixo Plotly x/y/z -> coluna 2/1/0 de `mesh.points`; o "Interior" recebe o mesmo recorte). Além disso, um `Mesh3d` semitransparente marca o plano. Os parâmetros entram na chave do cache do fragmento. O JS de Aparência (opacidade/cor) ignora a trace "Plano de corte". Conferido no navegador: faces do 3D com z <= posição do slider e plano exatamente nessa posição.
+- **requirements.txt:** adicionados trimesh, shapely, networkx, pillow. Desvio consciente do pedido ("apenas trimesh, shapely e pillow"): `trimesh.section(...).polygons_full` importa networkx (testado: sem ele, `ModuleNotFoundError`).
+
+### Etapa A (retomada do WIP, 21/10/2026)
+- **Cherry-pick de d2bdb6b:** conflito único em `app.py`, causado pela reindentação do bloco 3D (entrou em `with _tab_3d:`). Resolução mecânica: versão de 3e5eb81 (câmera) reindentada (+4 espaços fora da string JS, que ficou byte a byte igual) + os acréscimos do WIP (assinatura com `_plano`, trace do plano, chave do cache, filtro `idx` no JS). Prova: `git diff -w 3e5eb81 -- app.py` só remove as 4 linhas que receberam `_plano`/`idx`.
+- **Malhas com falhas (STL bruto):** vários STL têm contornos abertos no corte (ex.: Molar: 132 trechos, só 7 fechados). Quando o contorno está íntegro usam-se os `polygons_full` (furos respeitados); quando há trechos soltos, os segmentos são desenhados, fechados por morfologia (`FECHAR_PX = 3`) e preenchidos (`binary_fill_holes`). Limitação: nesse modo os furos internos ficam sólidos (a camada de dentro os recobre).
+- **Tela dos cortes:** quadrada e do mesmo tamanho nos 3 eixos (corte centralizado) para que as 3 imagens tenham a mesma escala na interface.
+- **Unidade:** mantida "un." (unidades nativas). O pedido falava em mm, mas os STL têm ~1.400 unidades de comprimento (voxels sem calibração); rotular como mm seria incorreto. A escala é preservada 1:1 em relação ao STL; basta trocar `slices.UNIDADE` (e, se preciso, aplicar o fator de voxel) quando houver calibração.
+- **Chave do cache dos cortes:** (caminho + mtime) em vez de hash do conteúdo — equivalente para arquivos em disco e sem custo de reler arquivos grandes a cada rerun.
+- **Observação de interface:** na primeira vez em que "Mostrar plano no 3D" é ligado numa sessão, o Streamlit volta para a aba 3D (comportamento do `st.tabs`); nas mudanças seguintes a aba Cortes permanece.
+
+## Etapa B — Dente de exemplo substitui o anterior
+
+- **Regra:** "Carregar dente de exemplo" chama `_trocar_dente(paths)`, que substitui `stl_paths` e limpa `_stl_selected`/`_stl_last` (equivale a "Limpar STL" + carregar). Todas as estruturas de um zip de exemplo entram juntas (mesmo dente).
+- **Exemplos avulsos (Esmalte, Dentina, Molar):** tratados como estruturas do MESMO dente; continuam somando entre si quando a lista atual só tem avulsos. Vindo de outro dente (zip, pasta ou upload), substituem. Premissa: os três avulsos são do mesmo dente; se não forem, basta trocar o `if` por `_trocar_dente([_dest])`.
+- **Câmera:** a chave de câmera por dente (3e5eb81) faz o dente novo abrir na câmera padrão (eye 1,6/1,6/1,3) sem alteração adicional.
+- **Correção encontrada no teste:** o estado de "Mostrar plano no 3D" (e do eixo) era descartado pelo Streamlit nas execuções interrompidas por `st.rerun()` (troca de dente, Limpar STL), porque o widget não chegava a ser desenhado. Solução: reatribuir `cortes_plano` e `cortes_plano_eixo` em `st.session_state` antes desses botões (padrão recomendado pelo Streamlit).
+
+## Etapa C — Bloco 3: envio de STL com compactação automática
+
+- **Interface:** caixa "Enviar STL" na barra lateral (acima dos dentes de exemplo), aceita `.stl` e `.zip`, vários arquivos de uma vez (estruturas do mesmo dente). `maxUploadSize = 1024` em `.streamlit/config.toml`. Ajuda: "Arquivos acima de 200 MB: envie o STL compactado em .zip (no Mac: clique direito no arquivo > Comprimir)". O envio substitui o dente atual (`_trocar_dente`) e entra em `stl_paths`, no mesmo fluxo do 3D e dos Cortes. O resumo (tamanho e triângulos antes/depois, "do cache") fica abaixo da caixa.
+- **Memória do envio:** o Streamlit guarda o arquivo enviado na RAM. Depois de gravado em disco, a chave do uploader é trocada (`upl_stl_<n>`) e o app reexecuta: o Streamlit descarta os bytes. O `.zip` é extraído membro a membro com `shutil.copyfileobj` (blocos de 1 MB, SHA-1 calculado no caminho); nada usa o `fh.read()` do `mesh_loader` sobre o arquivo bruto.
+- **Módulo `modules/stl_compactar.py`:** detecção binário x ASCII (ASCII convertido linha a linha para binário); leitura com `np.memmap` em blocos de 1 milhão de triângulos (um memmap por bloco, desfeito em seguida, para não manter o arquivo todo mapeado); contas em float32 (precisão do próprio STL).
+- **Agrupamento de vértices:** grade de célula absoluta (unidades do STL), `célula = sqrt(K * área / 300 mil)` com `K = 2,4` (calibrado: com K = 3 saíam ~0,8 × o alvo). Cada célula vira a média dos vértices; triângulos degenerados (dois vértices na mesma célula) e duplicados (mesmos 3 vértices, em qualquer orientação) são removidos. Sem limpeza topológica.
+- **Mesma grade no envio:** origem = mínimo da caixa envolvente conjunta; célula = a maior entre as estruturas (nenhuma passa do alvo; as menores ficam com a mesma resolução absoluta e, portanto, menos triângulos — ex.: Canal do pré-molar 975.884 -> 50.336). Sobreposição conferida: desvio máximo das caixas envolventes <= 1,83 un. com célula de 4,26 un.
+- **Teto de 30 MB:** se alguma estrutura passar de 30 MB, a célula é engrossada e a compactação refeita (até 3 tentativas). Nos testes, o maior resultado foi 15,0 MB.
+- **Cache em disco:** fora do repositório, em `tempfile.gettempdir()/dcubic_upload_cache` (nada a ignorar no Git). Medidas por SHA-1 do original (`info/<sha1>.json`); compactação em `<sha1>_<grade>/<nome>.stl`. O original bruto é apagado após a compactação.
+- **Limite seguro de memória:** `tamanho do envio (na RAM) + 450 MB de trabalho <= DCUBIC_LIMITE_MEMORIA_MB` (padrão 900). Acima disso, mensagem clara pedindo o `.zip`. Ex.: o STL bruto de 744 MB sem zip é recusado; o mesmo arquivo em `.zip` (114 MB) passa.
+- **Memória dos cortes:** `_trimesh_cached` passou a ter `max_entries=6`, para não acumular na RAM as malhas de todos os dentes já abertos na sessão.
+- **Unidade:** o cabeçalho dos STL do CTAnalyser diz "unit: mm", mas as coordenadas (~1.400 de comprimento) são de voxel; mantida a decisão da Etapa A ("un.").
+
+## Resumo do refino (Etapas A, B e C) — 21/10/2026
+
+- **A — Cortes (82f6faa):** aba "Cortes" com Axial/Coronal/Sagital calculados do STL bruto (trimesh + shapely + Pillow), tolerando malhas abertas; "Mostrar plano no 3D" recorta o modelo via `clip_plane` e marca o plano. Correção da câmera (3e5eb81) e painel Aparência (Bloco 1) preservados e conferidos no navegador. Cortes: 25–430 ms sem cache, < 0,4 ms com cache.
+- **B — Exemplo substitui (a556942):** carregar um dente de exemplo troca o dente atual; o novo abre na câmera padrão. Estado de "Mostrar plano no 3D" preservado entre trocas.
+- **C — Envio com compactação (a58945a):** `.stl`/`.zip` na barra lateral, até 1 GB; compactação por agrupamento de vértices com grade comum (~300 mil triângulos por estrutura, sobreposição mantida), cache por SHA-1, resultados de 2,4 a 15,0 MB (teto 30 MB). STL de 744 MB enviado em `.zip` de 114 MB: 7,6 s, pico 430 MB no teste isolado.
+- **Pendências/limitações:** unidade "un." até haver calibração de voxel; o pico de RSS do servidor inteiro chegou a 1.299 MB durante os testes de envio pela interface (Streamlit + 3D + cortes + envio na RAM) — acima de 1 GB, o que pede atenção antes de publicar no Streamlit Cloud (ajustar `DCUBIC_LIMITE_MEMORIA_MB` e/ou reduzir caches do 3D); envio pela interface testado com arquivo injetado via JavaScript no navegador embutido, a conferir com o seletor de arquivos real.
+
+## Etapa D1 — Memória (21/10/2026) — CONCLUÍDA (pico transitório aceito)
+- Patch aprovado reaplicado (caches com max_entries=2, STL lido do disco, bytes do envio liberados).
+- Modo volume sob demanda: no login só aparece o aviso + botão "Abrir modo volume (dados sintéticos)";
+  dados, arrays e figuras do modo volume só são criados após o clique. RSS logo após o login: ~200 MB.
+- `.streamlit/config.toml`: `maxUploadSize = 200`; legenda do envio com o limite de 200 MB e a orientação do .zip.
+- Envio em duas etapas: etapa 1 usa `checar_tamanho` (só tamanho, sem RSS); etapa 2 limpa os caches,
+  roda `gc.collect()` e só então `checar_memoria` (RSS).
+- `use_container_width` → `width="stretch"` apenas em `st.dataframe`; `st.plotly_chart` no Streamlit 1.50
+  não tem o parâmetro `width` (mantido o original nos 7 pontos).
+- Medição (8504, limite 800 MB): no macOS padrão o envio C foi RECUSADO (RSS 1.044 MB na etapa 2), porque
+  o macOS retém blocos grandes liberados (comprovado em teste isolado; `MallocLargeCache=0` desliga a retenção).
+  Com `MallocLargeCache=0` (comportamento equivalente ao Linux) o envio C foi ACEITO, mas o pico foi 936 MB:
+  o próprio Streamlit 1.50 recebe o envio inteiro na RAM (tornado + `parse_body_arguments`, ~4 cópias do zip
+  por ~0,5 s) somado à base com o Molar carregado (~505 MB). Isso fica fora do código do app.
+- **Decisão do Dr. Abe: opção 1 — ACEITOU o pico transitório de ~936 MB no envio** (causado por `parse_body_arguments` do Streamlit 1.50, que recebe o arquivo inteiro na RAM por ~0,5 s), medido com `MallocLargeCache=0` (equivalente ao Linux). No macOS padrão a checagem pode recusar o envio por retenção de memória do alocador.
+- Medições: login 467,8 → 200,6 MB; A) Molar 701,8 → 491,5; B) Cortes + plano 696,6 → 514,9; C) envio zip 114 MB 1.528,8 → 936,4 MB.
+
+## Etapa D2 — Cortes sem perder o canal (21/10/2026)
+- Contornos abertos: desenho dos segmentos + fechamento morfológico com tolerância de ~0,5% da diagonal do bounding box (`TOL_FECHAR`, em px = 0,5% × diagonal × px/un ÷ 2 iterações). Não há mais `binary_fill_holes`.
+- Preenchimento par-ímpar (even-odd) em raster (`_par_impar`): regiões separadas pelo traço formam um grafo; profundidade ímpar = sólido, par = vazio. Câmara pulpar/canais vazios ficam como furo.
+- Tentativa vetorial (colar pontas com shapely) descartada: o STL "Molar" gera ~1.800 segmentos fragmentados por corte; o raster foi mais robusto.
+- Limitação: lacunas maiores que a tolerância deixam o contorno aberto (ex.: Molar a 33% da altura, só contorno). Contorno íntegro (malhas fechadas) segue o caminho vetorial exato com furos.
+
+## Etapa D3 — Aba Cortes não pula (21/10/2026)
+- `st.tabs(["3D","Cortes"])` trocado por `st.segmented_control` com `key="aba_visualizacao"` (disponível no Streamlit 1.50): o rerun do checkbox "Mostrar plano no 3D" não volta mais ao 3D.
+- Só a aba ativa é renderizada; o estado dos widgets de Cortes (plano, eixo, sliders) é preservado por reatribuição em `session_state`, e o plano do 3D é lido de lá (funciona também com a aba 3D ativa).
+
+## Unidade dos STL (21/10/2026)
+- As coordenadas dos STL exportados pelo CTAnalyser estão em **voxels**, não em mm, apesar do cabeçalho "unit: mm" (todas as coordenadas terminam em ,5, centro de voxel).
+- Bounding box do Molar (idêntico ao de `molar_sup__raiz_voi_.stl`): 819 x 1233 x 1165 unidades.
+- Voxel estimado: 15–19 µm (supondo dente de 18–22 mm de comprimento) — apenas referência, não calibração.
+- Calibração pendente: obter o valor exato no arquivo .log de reconstrução (NRecon), linha "Pixel Size (um)". Até lá, `slices.UNIDADE` continua "un.".
+
+## Upload de arquivos grandes (21/10/2026)
+- **Limite configurável:** `.streamlit/config.toml` → `maxUploadSize = 2048`. Limite efetivo no app = `DCUBIC_MAX_UPLOAD_MB` (st.secrets tem prioridade; depois variável de ambiente). Sem ele: **200** no Streamlit Community Cloud (detectado por `/mount/src` ou `HOSTNAME` contendo "streamlit") e **2048** no Mac/servidor USP. Quando o efetivo é menor que o do config, o app reduz `server.maxUploadSize` em tempo de execução: o seletor de arquivos lê essa opção a cada exibição e recusa o arquivo no navegador, antes do envio (o Cloud não chega a receber 2 GB). Legenda: no Cloud, "Arquivos acima de 200 MB só podem ser abertos na versão local/servidor USP."; local, o limite e o aviso de redução automática. Envio acima do limite efetivo (soma de vários arquivos) é recusado na etapa 1 com a mesma mensagem.
+- **No Cloud:** criar o secret `DCUBIC_MAX_UPLOAD_MB = 200` (a detecção automática é só reforço). A mudança só chega ao Cloud quando for para a `main`.
+- **Disco, não RAM:** sem mudança — `receber` grava em blocos de 1 MB (`shutil.copyfileobj`) e o ZIP é extraído membro a membro direto para disco; os bytes do Streamlit são liberados logo após gravar (D1).
+- **Redução automática:** alvo `ALVO_TRIANGULOS` 300 mil → **500 mil**, e só reduz estruturas **acima** de 500 mil (as menores passam intactas, só convertidas para binário). Algoritmo: o agrupamento de vértices de `modules/stl_compactar.py` (Bloco 3). `tools/reduzir_stl.py` usa `decimate` do PyVista (quádrico), que exige malha limpa e falhou com Esmalte.stl de PRE-MOLAR-SUP e INCISIVO; o agrupamento de vértices não depende de topologia e é a alternativa robusta (sem `fast-simplification`, sem dependência nova). Mesma grade (origem + célula) para as estruturas reduzidas do envio: sobreposição preservada. Aviso no app: "Malha original: X triângulos → reduzida para Y para visualização." Barra de progresso mantida (etapas Lendo/Reduzindo/Pronto).
+- **Cache:** em disco por SHA-1 (já existia) e em memória pelos `st.cache_resource(max_entries=2)` de `_load_stl_from_paths` (3D) e `_trimesh_cached` (Cortes), com chave caminho + mtime da malha reduzida: não reprocessa a cada interação. O 3D ainda decima para 200 mil faces (exibição); os Cortes usam a malha reduzida de ~500 mil.
+- **Checagem de memória (ajusta a D1):** etapa 2 estima `150 MB de trabalho + Σ min(triângulos, 500 mil) × 400 B` (malha REDUZIDA aberta no app, não o arquivo bruto). Medido: 3D + Cortes de uma malha de ~515 mil triângulos = ~200 B/triângulo; 400 B dá margem para a figura do Plotly. No macOS o RSS não entra na conta (retenção do alocador, D1) — arquivos grandes não são recusados no Mac; no Linux (Cloud/servidor) entra RSS + estimativa ≤ `DCUBIC_LIMITE_MEMORIA_MB` (800).
+- **Testes (cache de disco novo e vazio a cada arquivo, mesmas funções do envio):** raiz do MOLAR-SUP (780 MB): 15.593.864 → 520.595 triângulos, 7,0 s, pico 298 MB, desvio máximo da caixa envolvente 2,13 un. (célula 5,33). Esmalte PRE-MOLAR-SUP (259 MB): 5.177.234 → 512.697, 5,3 s, pico 300 MB, desvio 1,16 un. (célula 3,00). O desvio vem das médias por célula (sempre menor que 1 célula); a grade comum mantém o alinhamento entre estruturas.
+- **Alerta (não resolvido, fora do app):** o Streamlit 1.50 recebe o envio inteiro na RAM (`parse_body_arguments`, ~4 cópias por ~0,5 s) antes do código do app rodar. Com 2048 MB, um envio de ~2 GB pode gerar pico transitório estimado de ~8 GB só no Streamlit; ~780 MB → ~3 GB. No Mac de 16 GB cabe, mas com folga pequena para 2 GB; envio em `.zip` reduz esse pico na proporção da compressão.
+- **Teste real pelo navegador:** Teste real pelo navegador com molar_sup__raiz_voi_.stl (780 MB, sem zip): pico de 2,9 GB por ~20 s na recepção do arquivo pelo próprio Streamlit (antes do processamento do app); após a redução, ~1 GB residual. Aceito para uso local (Mac 16 GB). Recomendação ao usuário: enviar arquivos grandes em .zip. Pendente antes do uso multiusuário no servidor USP: liberar o arquivo do file_uploader após gravar em disco e reduzir o pico. No Streamlit Cloud, definir DCUBIC_MAX_UPLOAD_MB = 200 no painel Secrets antes de levar esta branch à produção.

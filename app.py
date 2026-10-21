@@ -56,6 +56,7 @@ from modules.report import generate_pdf
 from modules.anatomy import compute_anatomy
 from modules import references
 from modules.mesh_loader import load_meshes
+from modules import slices as _slices
 
 _MAX_VOXELS = 12_000_000  # ponytail: ajuste conforme RAM disponível (Streamlit Cloud ~1 GB)
 
@@ -198,6 +199,7 @@ if _auth_status is not True:
     st.stop()
 
 # Login bem-sucedido — exibe o app abaixo
+st.sidebar.markdown("### DCubic Image System Platform")
 authenticator.logout(location="sidebar")
 st.sidebar.caption(f"Logado como: {st.session_state.get('name', '')}")
 
@@ -210,10 +212,6 @@ st.markdown(
     "header[data-testid='stHeader']{height:0;}"
     "[data-testid='stForm']{max-width:30% !important;min-width:320px;margin-left:auto !important;margin-right:auto !important;}"
     "</style>",
-    unsafe_allow_html=True,
-)
-st.markdown(
-    "<h4 style='margin:0;text-align:left'>DCubic Image System Platform</h4>",
     unsafe_allow_html=True,
 )
 
@@ -251,7 +249,7 @@ _arr_hash = lambda a: (a.shape, a.dtype.str, float(a.sum()))
 
 
 
-@st.cache_resource
+@st.cache_resource(max_entries=2)  # 2 dentes na RAM, no máximo
 def _load_stl_from_paths(path_mtime_pairs, decimate_target: int = 200_000):
     """Carrega e decima STLs a partir de caminhos de disco.
 
@@ -259,17 +257,27 @@ def _load_stl_from_paths(path_mtime_pairs, decimate_target: int = 200_000):
     memória entre reruns sem reconstrução. Chave: tupla de (caminho, mtime),
     então o cache invalida automaticamente se qualquer arquivo for modificado.
     Passa cache_key = caminho sem extensão para ativar cache decimado em disco.
+    Passa o CAMINHO (não os bytes): cada STL é lido do disco, um por vez, só se o
+    cache de disco não servir.
     """
-    _files = []
-    _cache_keys = []
-    for _p, _mt in path_mtime_pairs:
-        try:
-            with open(_p, "rb") as _fh:
-                _files.append((os.path.basename(_p), _fh.read()))
-                _cache_keys.append(os.path.splitext(_p)[0])
-        except Exception:
-            pass
+    _files = [(os.path.basename(_p), _p) for _p, _mt in path_mtime_pairs if os.path.isfile(_p)]
+    _cache_keys = [os.path.splitext(_p)[0] for _n, _p in _files]
     return load_meshes(_files, cache_keys=_cache_keys, decimate_target=decimate_target)
+
+
+@st.cache_resource(show_spinner="Preparando cortes…", max_entries=2)  # só as estruturas recentes na RAM
+def _trimesh_cached(caminho, mtime, n_faces_original, _malha_pv):
+    """Malha trimesh carregada 1x por arquivo (chave: caminho + mtime)."""
+    return _slices.carregar_trimesh(caminho, n_faces_original, _malha_pv)
+
+
+@st.cache_data(show_spinner=False, max_entries=64)
+def _corte_cached(chave_arquivos, visiveis, nome_eixo, pos_q, _malhas, _cores, _bbox):
+    """PNG do corte. Chave: arquivos+mtime, estruturas visíveis, eixo e posição
+    arredondada a 0,05 (pos_q = posição em passos de 0,05)."""
+    ms = {n: m for n, m in _malhas.items() if n in visiveis}
+    return _slices.gerar_corte(ms, _cores, nome_eixo, pos_q * _slices.PASSO_MM, _bbox,
+                               _slices.px_por_mm_padrao(_bbox))
 
 
 @st.cache_data(hash_funcs={np.ndarray: _arr_hash}, show_spinner=False)
@@ -284,7 +292,7 @@ def _compute_anatomy_cached(volume, spacing, crown_at_high, cervical_frac):
     return compute_anatomy(volume, spacing, crown_at_high=crown_at_high, cervical_frac=cervical_frac)
 
 
-@st.cache_resource(show_spinner="Gerando interior…")
+@st.cache_resource(show_spinner="Gerando interior…", max_entries=2)
 def _interior_cached(_mesh, chave, resolucao: int = 128):
     """Preenchimento interno (voxelização) — calcula 1x por malha, não a cada rerun.
     _mesh não é hasheado (PolyData); a chave identifica a malha."""
@@ -313,6 +321,133 @@ if _local_available:
 else:
     _stl_folder = ""
     _load_folder_btn = False
+
+# Opções da aba Cortes: reatribuídas ANTES dos botões que chamam st.rerun() (troca de
+# dente, Limpar STL); senão o Streamlit descarta o estado do widget não desenhado.
+for _k, _padrao in (("cortes_plano", False), ("cortes_plano_eixo", "Axial (Z)")):
+    st.session_state[_k] = st.session_state.get(_k, _padrao)
+
+
+def _trocar_dente(_paths):
+    """Dente novo (exemplo ou envio) SUBSTITUI o anterior (equivale a Limpar STL + carregar)."""
+    st.session_state["stl_paths"] = list(_paths)
+    st.session_state.pop("_upl_msg", None)
+    st.session_state.pop("_stl_selected", None)
+    st.session_state.pop("_stl_last", None)
+
+
+# ---------------------------------------------------------------------------
+# ENVIO DE STL — .stl ou .zip (várias estruturas do MESMO dente). O arquivo é gravado em
+# disco por blocos e compactado automaticamente (modules/stl_compactar.py); o resultado
+# entra em stl_paths e segue o mesmo fluxo do 3D e dos Cortes.
+# ---------------------------------------------------------------------------
+def _limite_envio_mb():
+    """Limite efetivo do envio em MB: DCUBIC_MAX_UPLOAD_MB (st.secrets ou ambiente) tem
+    prioridade; sem ele, 200 no Streamlit Community Cloud (detectado por /mount/src ou
+    HOSTNAME com "streamlit") e 2048 no Mac/servidor USP."""
+    try:
+        _v = st.secrets.get("DCUBIC_MAX_UPLOAD_MB")
+    except Exception:  # sem secrets.toml
+        _v = None
+    _v = _v or os.environ.get("DCUBIC_MAX_UPLOAD_MB")
+    if _v:
+        return int(_v)
+    _no_cloud = os.path.isdir("/mount/src") or "streamlit" in os.environ.get("HOSTNAME", "").lower()
+    return 200 if _no_cloud else 2048
+
+
+_LIMITE_ENVIO_MB = _limite_envio_mb()
+from streamlit import config as _st_config
+if _LIMITE_ENVIO_MB < _st_config.get_option("server.maxUploadSize"):
+    # O seletor de arquivos lê esta opção a cada exibição e recusa no navegador, antes de
+    # enviar: o servidor (Cloud, 1 GB de RAM) nem chega a receber o arquivo grande.
+    _st_config.set_option("server.maxUploadSize", _LIMITE_ENVIO_MB)
+
+st.sidebar.markdown("---")
+st.sidebar.subheader("Enviar STL")
+_upl_n = st.session_state.setdefault("_upl_n", 0)
+_envios = st.sidebar.file_uploader(
+    "Estruturas do mesmo dente (.stl ou .zip)",
+    type=["stl", "zip"],
+    accept_multiple_files=True,
+    key=f"upl_stl_{_upl_n}",
+)
+if _LIMITE_ENVIO_MB < 2048:
+    st.sidebar.caption(f"Limite de {_LIMITE_ENVIO_MB} MB por envio. Arquivos acima de "
+                       f"{_LIMITE_ENVIO_MB} MB só podem ser abertos na versão local/servidor USP.")
+else:
+    st.sidebar.caption(f"Limite de {_LIMITE_ENVIO_MB} MB por envio. Malhas acima de 500.000 "
+                       "triângulos são reduzidas automaticamente para visualização.")
+# Envio em duas etapas, para não manter na RAM o arquivo enviado e a compactação ao mesmo tempo:
+#  1) grava os arquivos em disco (por blocos) e troca a chave do uploader -> no rerun o
+#     Streamlit descarta os bytes do envio;
+#  2) no rerun seguinte, compacta a partir do disco, um arquivo por vez.
+def _liberar_envios(envios):
+    """Tira os bytes do envio do gerenciador de uploads do Streamlit, que os manteria na RAM
+    até o fim da sessão (trocar a chave do uploader não basta)."""
+    try:  # API interna do Streamlit (versão fixada no requirements); na falha, segue sem liberar
+        from streamlit.runtime import Runtime
+        from streamlit.runtime.scriptrunner import get_script_run_ctx
+        _sid = get_script_run_ctx().session_id
+        for _e in envios:
+            Runtime.instance().uploaded_file_mgr.remove_file(_sid, _e.file_id)
+            _e.close()
+    except Exception:
+        pass
+
+
+if _envios:
+    from modules import stl_compactar as _cmp
+    _barra = st.sidebar.progress(0.0, text="Recebendo…")
+    try:
+        _cmp.checar_tamanho(sum(_e.size for _e in _envios), _LIMITE_ENVIO_MB)  # etapa 1: só o tamanho
+        st.session_state["_upl_recebidos"] = _cmp.receber(_envios)
+        if not st.session_state["_upl_recebidos"]:
+            raise ValueError("Nenhum arquivo .stl encontrado no envio.")
+    except Exception as _ue:  # inclui MemoriaInsuficiente (mensagem já orienta o usuário)
+        st.session_state.pop("_upl_recebidos", None)
+        st.session_state["_upl_msg"] = ("erro", str(_ue))
+    _liberar_envios(_envios)
+    del _envios
+    st.session_state["_upl_n"] = _upl_n + 1  # uploader novo: o envio sai da memória
+    st.rerun()
+if "_upl_recebidos" in st.session_state:
+    from modules import stl_compactar as _cmp
+    _recebidos = st.session_state.pop("_upl_recebidos")
+    _barra = st.sidebar.progress(0.1, text="Preparando a malha…")
+    try:
+        # Libera o dente anterior antes de compactar (pico de memória menor)
+        _load_stl_from_paths.clear(); _trimesh_cached.clear(); _interior_cached.clear()
+        _cmp.checar_memoria(_recebidos)  # etapa 2: malhas REDUZIDAS + RSS (exceto macOS), bytes já liberados
+        _res = _cmp.compactar_recebidos(
+            _recebidos, progresso=lambda f, t: _barra.progress(min(float(f), 1.0), text=t))
+        _trocar_dente([_r["caminho"] for _r in _res])
+        st.session_state["_upl_msg"] = ("ok", _res)
+    except Exception as _ue:
+        for _nome, _cam, _sha, _tam in _recebidos:  # não deixa o original no disco
+            if os.path.isfile(_cam):
+                os.remove(_cam)
+        st.session_state["_upl_msg"] = ("erro", str(_ue))
+    del _recebidos
+    import gc as _gc
+    _gc.collect()
+    st.rerun()
+_upl_msg = st.session_state.get("_upl_msg")
+if _upl_msg and _upl_msg[0] == "erro":
+    st.sidebar.error(_upl_msg[1])
+elif _upl_msg:
+    _mb = lambda b: f"{b / 1024 ** 2:.1f} MB".replace(".", ",")
+    _n = lambda n: f"{n:,}".replace(",", ".")
+    for _r in _upl_msg[1]:
+        if _r.get("reduzida", True):
+            st.sidebar.info(
+                f"**{_r['nome']}** — Malha original: {_n(_r['tri_antes'])} triângulos → reduzida "
+                f"para {_n(_r['tri_depois'])} para visualização. "
+                f"({_mb(_r['bytes_antes'])} → {_mb(_r['bytes_depois'])}"
+                + (", do cache)" if _r["cache"] else ")"))
+        else:
+            st.sidebar.caption(f"**{_r['nome']}**: {_n(_r['tri_antes'])} triângulos (sem redução), "
+                               f"{_mb(_r['bytes_depois'])}")
 
 # ---------------------------------------------------------------------------
 # DENTES DE EXEMPLO — Drive (arquivo único) ou Drive (zip com múltiplas estruturas)
@@ -393,10 +528,7 @@ if st.sidebar.button("Carregar dente de exemplo", key="drive_sample_btn"):
             if not _validos:
                 st.sidebar.warning(f"Nenhum STL válido encontrado em {_pasta}.")
             else:
-                _existing = st.session_state.get("stl_paths", [])
-                _novos = [p for p in _validos if p not in _existing]
-                if _novos:
-                    st.session_state["stl_paths"] = _existing + _novos
+                _trocar_dente(_validos)  # todas as estruturas do zip = um único dente
                 st.rerun()
     else:
         _fid = _DRIVE_SAMPLES[_sample_sel]
@@ -426,8 +558,13 @@ if st.sidebar.button("Carregar dente de exemplo", key="drive_sample_btn"):
                 _dest = None
         if _dest and _stl_valido(_dest):
             _existing_paths = st.session_state.get("stl_paths", [])
-            if _dest not in _existing_paths:
-                st.session_state["stl_paths"] = _existing_paths + [_dest]
+            # Esmalte/Dentina/Molar avulsos = estruturas do MESMO dente: somam entre si.
+            # Vindo de outro dente (zip, pasta ou upload), substitui.
+            if _existing_paths and all(os.path.dirname(_p) == _SAMPLE_DIR for _p in _existing_paths):
+                if _dest not in _existing_paths:
+                    st.session_state["stl_paths"] = _existing_paths + [_dest]
+            else:
+                _trocar_dente([_dest])
             st.rerun()
 
 # Quando o botão for clicado: persiste apenas CAMINHOS em session_state.
@@ -454,6 +591,7 @@ if _load_folder_btn:
             st.session_state.pop("_stl_selected", None)
 
 if st.sidebar.button("Limpar STL", key="stl_clear"):
+    st.session_state.pop("_upl_msg", None)
     st.session_state.pop("stl_paths", None)
     st.session_state.pop("_stl_selected", None)
     st.session_state.pop("_stl_last", None)
@@ -618,103 +756,184 @@ if _is_stl:
         for _mi in _stl_ok
     }
 
-    st.subheader("Render 3D — malhas STL")
-    if _meshes_dict:
-        _meshes_filtrado = {n: m for n, m in _meshes_dict.items() if _visible_dict.get(n, True)}
-
-        @st.cache_data(show_spinner="Montando o 3D…", max_entries=8)
-        def _fragmento_3d_cached(chave, _meshes_filtrado, _tissue_colors_stl, _opac_dict,
-                                 _meshes_dict, _stl_ok, _revelar_interior):
-            """HTML pesado do Plotly. chave = arquivos+mtime+visibilidade+revelar_interior;
-            mudar só opacidade/cor/vista/lock NÃO regenera este fragmento."""
-            _fig_stl = create_plotly_3d(
-                _meshes_filtrado, _tissue_colors_stl, opacities=_opac_dict, clip_plane=None,
-                bbox_meshes=_meshes_dict,
-            )
-
-            if _revelar_interior and _stl_ok:
-                try:
-                    _casca_mi = next(
-                        (m for m in _stl_ok if any(k in m["name"].lower() for k in ("molar", "raiz"))),
-                        max(_stl_ok, key=lambda m: m["mesh"].n_cells),
-                    )
-                    _casca_pv = _casca_mi["mesh"]
-                    _interior = _interior_cached(
-                        _casca_pv,
-                        (_casca_mi["name"], _casca_pv.n_points, _casca_pv.n_cells, tuple(_casca_pv.bounds)),
-                        128,
-                    )
-                    if _interior is not None:
-                        import plotly.graph_objects as _go
-                        _verts_i = _interior.points
-                        _faces_i = _interior.faces.reshape(-1, 4)[:, 1:]
-                        _fig_stl.add_trace(_go.Mesh3d(
-                            x=_verts_i[:, 2], y=_verts_i[:, 1], z=_verts_i[:, 0],
-                            i=_faces_i[:, 0], j=_faces_i[:, 1], k=_faces_i[:, 2],
-                            color="#7B2FBE", opacity=1.0,
-                            name="Interior",
-                            showlegend=False,
-                            hoverinfo="skip",
-                        ))
-                except ValueError as _ve:
-                    st.warning("Não foi possível gerar o interior: " + str(_ve))
-                except Exception as _ie:
-                    st.warning("Não foi possível gerar o interior: " + str(_ie))
-
-            _fig_stl.update_layout(
-                uirevision="constant",  # preserva câmera entre reruns do Streamlit
-                modebar=dict(orientation="v"),
-                legend=dict(x=0.01, y=0.99, xanchor="left"),  # libera o canto direito para o ícone de câmera
-                autosize=True, height=None,  # sem altura/largura fixas (anula o 520 do viewer3d): ocupa 100% da div
-                margin=dict(l=0, r=0, t=0, b=0),
-                scene=dict(
-                    dragmode="orbit",
-                    camera=_CAM_PADRAO,
-                    xaxis=dict(title=dict(font=dict(size=18)), tickfont=dict(size=15)),
-                    yaxis=dict(title=dict(font=dict(size=18)), tickfont=dict(size=15)),
-                    zaxis=dict(title=dict(font=dict(size=18)), tickfont=dict(size=15)),
-                ),
-            )
-            limpar_figura_3d(_fig_stl)
-            return _fig_stl.to_html(
-                include_plotlyjs="cdn", full_html=False, div_id="stl_plot",
-                config={
-                    "displayModeBar": True, "displaylogo": False,
-                    "modeBarButtons": [["toImage"]],  # só o ícone de câmera (Baixar imagem)
-                    "toImageButtonOptions": {"format": "png", "width": 1600,
-                                             "height": 1200, "filename": "modelo_stl"},
-                },
-            )
-
-        _chave_3d = (
-            tuple(_stl_path_mtime_dedup),
-            tuple(sorted(_visible_dict.items())),
-            bool(_revelar_interior),
-        )
-        _plot_frag = _fragmento_3d_cached(
-            _chave_3d, _meshes_filtrado, _tissue_colors_stl, _opac_dict,
-            _meshes_dict, _stl_ok, _revelar_interior,
-        )
-
-        # Valores da seção "Aparência" -> pequeno objeto JS injetado ANTES do fragmento.
-        if _ss.get("ap_cor_on"):
-            _ap_cor = (_ss.get("ap_cor", "#ebebeb") if _ss.get("ap_cor_modo") == "Cor personalizada"
-                       else "rgb({0},{0},{0})".format(_ss.get("ap_tom", 235)))
+    # ── Visualização: 3D | Cortes. Seletor com estado (não st.tabs): marcar/desmarcar "Mostrar
+    #    plano no 3D" provoca rerun e st.tabs voltava à 1ª aba. A aba Cortes é calculada ANTES
+    #    do 3D para que o plano (opcional) use os valores atuais dos sliders. ──
+    _aba = st.segmented_control("Visualização", ["3D", "Cortes"], default="3D",
+                                key="aba_visualizacao", label_visibility="collapsed") or "3D"
+    _plano_3d = None   # (eixo xyz do Plotly 0/1/2, valor) quando "Mostrar plano no 3D" está ligado
+    _por_nome = {os.path.splitext(os.path.basename(_p))[0]: (_p, _mt)
+                 for _p, _mt in _stl_path_mtime_dedup}
+    _tm = {}
+    for _mi in _stl_ok:
+        if _mi["name"] in _por_nome:
+            _pp, _mt = _por_nome[_mi["name"]]
+            _tm[_mi["name"]] = _trimesh_cached(_pp, _mt, _mi["n_faces"], _mi["mesh"])
+    _vis_tm = tuple(n for n in _tm if _visible_dict.get(n, True))
+    if _vis_tm:
+        _bb = _slices.bbox_combinado(_tm)
+        _ext_max = float(max(_bb[1] - _bb[0]))
+        _passo = _slices.PASSO_MM if _ext_max < 50 else 1.0
+        _chave_arq = tuple(_stl_path_mtime_dedup)
+        _sig = "_".join(f"{v:.1f}" for v in _bb.ravel())
+        # Widgets não exibidos perdem o estado no Streamlit: reatribui para preservar
+        # (o plano no 3D depende deles mesmo com a aba 3D ativa).
+        for _k in ("cortes_plano", "cortes_plano_eixo", *(f"corte_{_n}_{_sig}" for _n in _slices.EIXOS)):
+            if _k in st.session_state:
+                st.session_state[_k] = st.session_state[_k]
+    if _aba == "Cortes":
+        if not _vis_tm:
+            st.info("Ative ao menos uma estrutura na barra lateral para ver os cortes.")
         else:
-            _ap_cor = None
-        _ap = {
-            "opac": _ss.get("ap_opac", 100) if _ss.get("ap_opac_on") else None,
-            "cor": _ap_cor,
-            "lock": bool(_ss.get("ap_lock")),
-            "cmd": _ss.get("_ap_cmd"),
-            "cam_padrao": _CAM_PADRAO,
-            # Uma chave de câmera por dente (hash dos nomes dos arquivos carregados):
-            # dente novo não herda a câmera de outro.
-            "kcam": "dcubic_stl_camera_" + hashlib.md5("|".join(sorted(
-                os.path.basename(_p) for _p in _ss.get("stl_paths", []))).encode()).hexdigest()[:12],
-        }
-        import streamlit.components.v1 as _components
-        _ctrl_html = """
+            _cc1, _cc2 = st.columns([1, 2])
+            _cc1.checkbox("Mostrar plano no 3D", key="cortes_plano")
+            _cc2.radio("Plano no 3D", list(_slices.EIXOS), horizontal=True,
+                       key="cortes_plano_eixo", label_visibility="collapsed")
+            _cols = st.columns(3)
+            for _col, _ne in zip(_cols, _slices.EIXOS):
+                _ax = _slices.EIXOS[_ne][0]
+                _lo, _hi = float(_bb[0][_ax]), float(_bb[1][_ax])
+                with _col:
+                    _pos = st.slider(f"{_ne} — posição ({_slices.UNIDADE})", _lo, _hi,
+                                     (_lo + _hi) / 2, step=_passo, key=f"corte_{_ne}_{_sig}")
+                    _pq = int(round(_pos / _slices.PASSO_MM))
+                    _png, _inf = _corte_cached(_chave_arq, _vis_tm, _ne, _pq, _tm,
+                                               {n: _tissue_colors_stl[n] for n in _tm}, _bb)
+                    if _png is None:
+                        st.warning("Fora do dente nesta posição")
+                    else:
+                        st.image(_png, width="stretch")
+            st.caption("Cortes calculados direto do STL bruto, sem tratamento manual. "
+                       f"Escala em {_slices.UNIDADE} (unidades nativas do STL; calibração pendente).")
+    if _vis_tm and st.session_state.get("cortes_plano"):
+        _ne = st.session_state.get("cortes_plano_eixo", list(_slices.EIXOS)[0])
+        _ax = _slices.EIXOS[_ne][0]
+        _meio = (float(_bb[0][_ax]) + float(_bb[1][_ax])) / 2
+        _pq = int(round(st.session_state.get(f"corte_{_ne}_{_sig}", _meio) / _slices.PASSO_MM))
+        _plano_3d = (_ax, _pq * _slices.PASSO_MM)
+
+    if _aba == "3D":
+        if _meshes_dict:
+            _meshes_filtrado = {n: m for n, m in _meshes_dict.items() if _visible_dict.get(n, True)}
+
+            @st.cache_data(show_spinner="Montando o 3D…", max_entries=4)  # ~2 dentes (com e sem plano)
+            def _fragmento_3d_cached(chave, _meshes_filtrado, _tissue_colors_stl, _opac_dict,
+                                     _meshes_dict, _stl_ok, _revelar_interior, _plano):
+                """HTML pesado do Plotly. chave = arquivos+mtime+visibilidade+revelar_interior;
+                mudar só opacidade/cor/vista/lock NÃO regenera este fragmento."""
+                _fig_stl = create_plotly_3d(
+                    _meshes_filtrado, _tissue_colors_stl, opacities=_opac_dict,
+                    # Plano ligado: recorta o modelo no corte atual. _plano usa eixos do Plotly
+                    # (x,y,z); clip_plane usa colunas de mesh.points (x=col2, y=col1, z=col0).
+                    clip_plane=({"axis": 2 - _plano[0], "value": _plano[1]} if _plano else None),
+                    bbox_meshes=_meshes_dict,
+                )
+
+                if _revelar_interior and _stl_ok:
+                    try:
+                        _casca_mi = next(
+                            (m for m in _stl_ok if any(k in m["name"].lower() for k in ("molar", "raiz"))),
+                            max(_stl_ok, key=lambda m: m["mesh"].n_cells),
+                        )
+                        _casca_pv = _casca_mi["mesh"]
+                        _interior = _interior_cached(
+                            _casca_pv,
+                            (_casca_mi["name"], _casca_pv.n_points, _casca_pv.n_cells, tuple(_casca_pv.bounds)),
+                            128,
+                        )
+                        if _interior is not None:
+                            import plotly.graph_objects as _go
+                            _verts_i = _interior.points
+                            _faces_i = _interior.faces.reshape(-1, 4)[:, 1:]
+                            if _plano is not None:  # mesmo recorte do clip_plane
+                                _faces_i = _faces_i[_verts_i[:, 2 - _plano[0]][_faces_i].max(axis=1) <= _plano[1]]
+                            _fig_stl.add_trace(_go.Mesh3d(
+                                x=_verts_i[:, 2], y=_verts_i[:, 1], z=_verts_i[:, 0],
+                                i=_faces_i[:, 0], j=_faces_i[:, 1], k=_faces_i[:, 2],
+                                color="#7B2FBE", opacity=1.0,
+                                name="Interior",
+                                showlegend=False,
+                                hoverinfo="skip",
+                            ))
+                    except ValueError as _ve:
+                        st.warning("Não foi possível gerar o interior: " + str(_ve))
+                    except Exception as _ie:
+                        st.warning("Não foi possível gerar o interior: " + str(_ie))
+
+                if _plano is not None:
+                    # Plano de corte semitransparente (mesma convenção de eixos do viewer3d: x,y,z do Plotly)
+                    import plotly.graph_objects as _gop
+                    _pp = np.concatenate([m.points[:, [2, 1, 0]] for m in _meshes_dict.values() if m is not None])
+                    _bbp = np.array([_pp.min(axis=0), _pp.max(axis=0)])  # (x,y,z) do Plotly
+                    _ea, _va = _plano
+                    _o = [i for i in range(3) if i != _ea]
+                    _quad = np.zeros((4, 3))
+                    for _k, (_a, _b) in enumerate(((0, 0), (1, 0), (1, 1), (0, 1))):
+                        _quad[_k, _ea] = _va
+                        _quad[_k, _o[0]] = _bbp[_a, _o[0]]
+                        _quad[_k, _o[1]] = _bbp[_b, _o[1]]
+                    _fig_stl.add_trace(_gop.Mesh3d(
+                        x=_quad[:, 0], y=_quad[:, 1], z=_quad[:, 2],
+                        i=[0, 0], j=[1, 2], k=[2, 3],
+                        color="#00c8ff", opacity=0.3, name="Plano de corte",
+                        showlegend=False, hoverinfo="skip", flatshading=True,
+                    ))
+
+                _fig_stl.update_layout(
+                    uirevision="constant",  # preserva câmera entre reruns do Streamlit
+                    modebar=dict(orientation="v"),
+                    legend=dict(x=0.01, y=0.99, xanchor="left"),  # libera o canto direito para o ícone de câmera
+                    autosize=True, height=None,  # sem altura/largura fixas (anula o 520 do viewer3d): ocupa 100% da div
+                    margin=dict(l=0, r=0, t=0, b=0),
+                    scene=dict(
+                        dragmode="orbit",
+                        camera=_CAM_PADRAO,
+                        xaxis=dict(title=dict(font=dict(size=18)), tickfont=dict(size=15)),
+                        yaxis=dict(title=dict(font=dict(size=18)), tickfont=dict(size=15)),
+                        zaxis=dict(title=dict(font=dict(size=18)), tickfont=dict(size=15)),
+                    ),
+                )
+                limpar_figura_3d(_fig_stl)
+                return _fig_stl.to_html(
+                    include_plotlyjs="cdn", full_html=False, div_id="stl_plot",
+                    config={
+                        "displayModeBar": True, "displaylogo": False,
+                        "modeBarButtons": [["toImage"]],  # só o ícone de câmera (Baixar imagem)
+                        "toImageButtonOptions": {"format": "png", "width": 1600,
+                                                 "height": 1200, "filename": "modelo_stl"},
+                    },
+                )
+
+            _chave_3d = (
+                tuple(_stl_path_mtime_dedup),
+                tuple(sorted(_visible_dict.items())),
+                bool(_revelar_interior),
+                _plano_3d,  # parâmetros do plano de corte entram na chave do fragmento
+            )
+            _plot_frag = _fragmento_3d_cached(
+                _chave_3d, _meshes_filtrado, _tissue_colors_stl, _opac_dict,
+                _meshes_dict, _stl_ok, _revelar_interior, _plano_3d,
+            )
+
+            # Valores da seção "Aparência" -> pequeno objeto JS injetado ANTES do fragmento.
+            if _ss.get("ap_cor_on"):
+                _ap_cor = (_ss.get("ap_cor", "#ebebeb") if _ss.get("ap_cor_modo") == "Cor personalizada"
+                           else "rgb({0},{0},{0})".format(_ss.get("ap_tom", 235)))
+            else:
+                _ap_cor = None
+            _ap = {
+                "opac": _ss.get("ap_opac", 100) if _ss.get("ap_opac_on") else None,
+                "cor": _ap_cor,
+                "lock": bool(_ss.get("ap_lock")),
+                "cmd": _ss.get("_ap_cmd"),
+                "cam_padrao": _CAM_PADRAO,
+                # Uma chave de câmera por dente (hash dos nomes dos arquivos carregados):
+                # dente novo não herda a câmera de outro.
+                "kcam": "dcubic_stl_camera_" + hashlib.md5("|".join(sorted(
+                    os.path.basename(_p) for _p in _ss.get("stl_paths", []))).encode()).hexdigest()[:12],
+            }
+            import streamlit.components.v1 as _components
+            _ctrl_html = """
 <style>
 html,body{margin:0;padding:0;overflow:hidden;height:100%;background:#0f0f0f;color:#eee;font-family:sans-serif}
 #stl_plot{width:100%;height:100%}
@@ -748,8 +967,9 @@ html,body{margin:0;padding:0;overflow:hidden;height:100%;background:#0f0f0f;colo
     if(!gd||!gd._fullLayout){setTimeout(init,100);return;}
 
     // ---- Opacidade / Cor (aplicadas a todas as malhas, como no painel antigo) ----
-    if(AP.opac!==null) Plotly.restyle(gd,{opacity:AP.opac/100,visible:AP.opac>0});
-    if(AP.cor!==null) Plotly.restyle(gd,{color:AP.cor});
+    var idx=[];gd.data.forEach(function(t,i){if(t.name!=='Plano de corte')idx.push(i);});
+    if(AP.opac!==null) Plotly.restyle(gd,{opacity:AP.opac/100,visible:AP.opac>0},idx);
+    if(AP.cor!==null) Plotly.restyle(gd,{color:AP.cor},idx);
 
     // ---- Câmera: comando novo (Vista/Resetar, por nonce) ou a salva no localStorage ----
     var cam=null;
@@ -783,19 +1003,19 @@ html,body{margin:0;padding:0;overflow:hidden;height:100%;background:#0f0f0f;colo
   setTimeout(init,100);
 })();
 </script>""".replace("__AP__", json.dumps(_ap))
-        _full_html = (
-            "<!DOCTYPE html><html><head>"
-            "<meta charset='utf-8'>"
-            "<meta name='viewport' content='width=device-width,initial-scale=1'>"
-            "</head><body>"
-            + _ctrl_html
-            + _plot_frag
-            + "</body></html>"
-        )
-        # 800 px é só o valor inicial: o script ajusta o iframe para max(600px, 85vh).
-        _components.html(_full_html, height=800, scrolling=False)
-    else:
-        st.info("Ative ao menos uma estrutura na barra lateral para visualizar.")
+            _full_html = (
+                "<!DOCTYPE html><html><head>"
+                "<meta charset='utf-8'>"
+                "<meta name='viewport' content='width=device-width,initial-scale=1'>"
+                "</head><body>"
+                + _ctrl_html
+                + _plot_frag
+                + "</body></html>"
+            )
+            # 800 px é só o valor inicial: o script ajusta o iframe para max(600px, 85vh).
+            _components.html(_full_html, height=800, scrolling=False)
+        else:
+            st.info("Ative ao menos uma estrutura na barra lateral para visualizar.")
 
     st.subheader("Métricas em unidades nativas do STL — calibração de voxel pendente (não são mm³)")
     st.dataframe(
@@ -809,14 +1029,21 @@ html,body{margin:0;padding:0;overflow:hidden;height:100%;background:#0f0f0f;colo
             }
             for m in _stl_ok
         ],
-        use_container_width=True,
+        width="stretch",
     )
 
     st.stop()
 
 # ---------------------------------------------------------------------------
-# MODO VOLUME (voxels) — comportamento original inalterado
+# MODO VOLUME (voxels) — sob demanda: nada deste modo (dados, arrays, figuras) é criado
+# no login nem antes de o usuário escolhê-lo.
 # ---------------------------------------------------------------------------
+if not st.session_state.get("modo_volume"):
+    st.info("Carregue um dente pela barra lateral (Enviar STL ou Dentes de exemplo).")
+    st.button("Abrir modo volume (dados sintéticos)", key="abrir_modo_volume",
+              on_click=lambda: st.session_state.update(modo_volume=True))
+    st.stop()
+
 vol_data = _load_synthetic_vol()
 
 volume   = vol_data["volume"]
