@@ -18,7 +18,9 @@ def load_mesh(
     cache_key: str | None = None,
     progress_cb=None,
 ) -> dict:
-    """Carrega um STL a partir de bytes e retorna métricas da malha.
+    """Carrega um STL a partir de bytes OU de um caminho em disco (str) e retorna métricas.
+    Com caminho, o STL é lido direto do disco (sem cópia dos bytes na RAM) e só quando
+    o cache de disco não serve.
 
     Se cache_key for fornecido (caminho-base sem extensão), salva/lê um cache
     de disco: <cache_key>.dcubic_cache.ply (malha decimada) e
@@ -63,26 +65,34 @@ def load_mesh(
             pass  # cache corrompido → processa normalmente
 
     # b) ler e triangular STL
-    tmp_fd, tmp_path = tempfile.mkstemp(suffix=".stl", prefix="dcubic_mesh_")
-    try:
-        os.write(tmp_fd, data)
-        os.close(tmp_fd)
-        if progress_cb:
-            progress_cb(25, "Lendo STL")
+    if progress_cb:
+        progress_cb(25, "Lendo STL")
+    if isinstance(data, str):
         try:
-            mesh = pv.read(tmp_path)
+            mesh = pv.read(data)
         except Exception as exc:
             raise ValueError(f"Não foi possível ler '{name}' como malha STL: {exc}") from exc
-    finally:
+    else:
+        tmp_fd, tmp_path = tempfile.mkstemp(suffix=".stl", prefix="dcubic_mesh_")
         try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
+            os.write(tmp_fd, data)
+            os.close(tmp_fd)
+            try:
+                mesh = pv.read(tmp_path)
+            except Exception as exc:
+                raise ValueError(f"Não foi possível ler '{name}' como malha STL: {exc}") from exc
+        finally:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+    data = None  # bytes do envio não são mais necessários
 
     if mesh.n_points == 0:
         raise ValueError(f"Malha '{name}' está vazia (0 pontos).")
 
     tri = mesh.triangulate()
+    del mesh  # não mantém a malha lida e a triangulada ao mesmo tempo
 
     # c) medir na malha ORIGINAL
     if progress_cb:
@@ -104,6 +114,9 @@ def load_mesh(
         mesh_display = tri.decimate_pro(ratio := 1.0 - (decimate_target / tri.n_cells), preserve_topology=True)
     else:
         mesh_display = tri
+    del tri  # a original (cheia) sai da memória; fica só a de exibição
+    import gc
+    gc.collect()
 
     # e) gravar cache em disco
     if _ply and _jsn:

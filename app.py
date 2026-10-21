@@ -252,7 +252,7 @@ _arr_hash = lambda a: (a.shape, a.dtype.str, float(a.sum()))
 
 
 
-@st.cache_resource
+@st.cache_resource(max_entries=2)  # 2 dentes na RAM, no máximo
 def _load_stl_from_paths(path_mtime_pairs, decimate_target: int = 200_000):
     """Carrega e decima STLs a partir de caminhos de disco.
 
@@ -260,20 +260,15 @@ def _load_stl_from_paths(path_mtime_pairs, decimate_target: int = 200_000):
     memória entre reruns sem reconstrução. Chave: tupla de (caminho, mtime),
     então o cache invalida automaticamente se qualquer arquivo for modificado.
     Passa cache_key = caminho sem extensão para ativar cache decimado em disco.
+    Passa o CAMINHO (não os bytes): cada STL é lido do disco, um por vez, só se o
+    cache de disco não servir.
     """
-    _files = []
-    _cache_keys = []
-    for _p, _mt in path_mtime_pairs:
-        try:
-            with open(_p, "rb") as _fh:
-                _files.append((os.path.basename(_p), _fh.read()))
-                _cache_keys.append(os.path.splitext(_p)[0])
-        except Exception:
-            pass
+    _files = [(os.path.basename(_p), _p) for _p, _mt in path_mtime_pairs if os.path.isfile(_p)]
+    _cache_keys = [os.path.splitext(_p)[0] for _n, _p in _files]
     return load_meshes(_files, cache_keys=_cache_keys, decimate_target=decimate_target)
 
 
-@st.cache_resource(show_spinner="Preparando cortes…", max_entries=6)  # só as estruturas recentes na RAM
+@st.cache_resource(show_spinner="Preparando cortes…", max_entries=2)  # só as estruturas recentes na RAM
 def _trimesh_cached(caminho, mtime, n_faces_original, _malha_pv):
     """Malha trimesh carregada 1x por arquivo (chave: caminho + mtime)."""
     return _slices.carregar_trimesh(caminho, n_faces_original, _malha_pv)
@@ -300,7 +295,7 @@ def _compute_anatomy_cached(volume, spacing, crown_at_high, cervical_frac):
     return compute_anatomy(volume, spacing, crown_at_high=crown_at_high, cervical_frac=cervical_frac)
 
 
-@st.cache_resource(show_spinner="Gerando interior…")
+@st.cache_resource(show_spinner="Gerando interior…", max_entries=2)
 def _interior_cached(_mesh, chave, resolucao: int = 128):
     """Preenchimento interno (voxelização) — calcula 1x por malha, não a cada rerun.
     _mesh não é hasheado (PolyData); a chave identifica a malha."""
@@ -357,22 +352,62 @@ _envios = st.sidebar.file_uploader(
     type=["stl", "zip"],
     accept_multiple_files=True,
     key=f"upl_stl_{_upl_n}",
-    help="Arquivos acima de 200 MB: envie o STL compactado em .zip "
-         "(no Mac: clique direito no arquivo > Comprimir)",
 )
+st.sidebar.caption("Limite de 200 MB por envio. STL maiores: envie compactado em .zip "
+                   "(no Mac: clique direito no arquivo > Comprimir)")
+# Envio em duas etapas, para não manter na RAM o arquivo enviado e a compactação ao mesmo tempo:
+#  1) grava os arquivos em disco (por blocos) e troca a chave do uploader -> no rerun o
+#     Streamlit descarta os bytes do envio;
+#  2) no rerun seguinte, compacta a partir do disco, um arquivo por vez.
+def _liberar_envios(envios):
+    """Tira os bytes do envio do gerenciador de uploads do Streamlit, que os manteria na RAM
+    até o fim da sessão (trocar a chave do uploader não basta)."""
+    try:  # API interna do Streamlit (versão fixada no requirements); na falha, segue sem liberar
+        from streamlit.runtime import Runtime
+        from streamlit.runtime.scriptrunner import get_script_run_ctx
+        _sid = get_script_run_ctx().session_id
+        for _e in envios:
+            Runtime.instance().uploaded_file_mgr.remove_file(_sid, _e.file_id)
+            _e.close()
+    except Exception:
+        pass
+
+
 if _envios:
     from modules import stl_compactar as _cmp
     _barra = st.sidebar.progress(0.0, text="Recebendo…")
     try:
-        _cmp.checar_memoria(sum(_e.size for _e in _envios))
-        _res = _cmp.receber_e_compactar(
-            _envios, progresso=lambda f, t: _barra.progress(min(float(f), 1.0), text=t))
+        _cmp.checar_tamanho(sum(_e.size for _e in _envios))  # etapa 1: só o tamanho, sem RSS
+        st.session_state["_upl_recebidos"] = _cmp.receber(_envios)
+        if not st.session_state["_upl_recebidos"]:
+            raise ValueError("Nenhum arquivo .stl encontrado no envio.")
+    except Exception as _ue:  # inclui MemoriaInsuficiente (mensagem já orienta o usuário)
+        st.session_state.pop("_upl_recebidos", None)
+        st.session_state["_upl_msg"] = ("erro", str(_ue))
+    _liberar_envios(_envios)
+    del _envios
+    st.session_state["_upl_n"] = _upl_n + 1  # uploader novo: o envio sai da memória
+    st.rerun()
+if "_upl_recebidos" in st.session_state:
+    from modules import stl_compactar as _cmp
+    _recebidos = st.session_state.pop("_upl_recebidos")
+    _barra = st.sidebar.progress(0.1, text="Compactando…")
+    try:
+        # Libera o dente anterior antes de compactar (pico de memória menor)
+        _load_stl_from_paths.clear(); _trimesh_cached.clear(); _interior_cached.clear()
+        _cmp.checar_memoria()  # etapa 2: RSS só agora, com os bytes do envio já liberados (+ gc)
+        _res = _cmp.compactar_recebidos(
+            _recebidos, progresso=lambda f, t: _barra.progress(min(float(f), 1.0), text=t))
         _trocar_dente([_r["caminho"] for _r in _res])
         st.session_state["_upl_msg"] = ("ok", _res)
-    except Exception as _ue:  # inclui MemoriaInsuficiente (mensagem já orienta o usuário)
+    except Exception as _ue:
+        for _nome, _cam, _sha, _tam in _recebidos:  # não deixa o original no disco
+            if os.path.isfile(_cam):
+                os.remove(_cam)
         st.session_state["_upl_msg"] = ("erro", str(_ue))
-    # Uploader novo: o Streamlit descarta da memória os bytes do envio anterior.
-    st.session_state["_upl_n"] = _upl_n + 1
+    del _recebidos
+    import gc as _gc
+    _gc.collect()
     st.rerun()
 _upl_msg = st.session_state.get("_upl_msg")
 if _upl_msg and _upl_msg[0] == "erro":
@@ -742,7 +777,7 @@ if _is_stl:
         if _meshes_dict:
             _meshes_filtrado = {n: m for n, m in _meshes_dict.items() if _visible_dict.get(n, True)}
 
-            @st.cache_data(show_spinner="Montando o 3D…", max_entries=8)
+            @st.cache_data(show_spinner="Montando o 3D…", max_entries=4)  # ~2 dentes (com e sem plano)
             def _fragmento_3d_cached(chave, _meshes_filtrado, _tissue_colors_stl, _opac_dict,
                                      _meshes_dict, _stl_ok, _revelar_interior, _plano):
                 """HTML pesado do Plotly. chave = arquivos+mtime+visibilidade+revelar_interior;
@@ -955,14 +990,21 @@ html,body{margin:0;padding:0;overflow:hidden;height:100%;background:#0f0f0f;colo
             }
             for m in _stl_ok
         ],
-        use_container_width=True,
+        width="stretch",
     )
 
     st.stop()
 
 # ---------------------------------------------------------------------------
-# MODO VOLUME (voxels) — comportamento original inalterado
+# MODO VOLUME (voxels) — sob demanda: nada deste modo (dados, arrays, figuras) é criado
+# no login nem antes de o usuário escolhê-lo.
 # ---------------------------------------------------------------------------
+if not st.session_state.get("modo_volume"):
+    st.info("Carregue um dente pela barra lateral (Enviar STL ou Dentes de exemplo).")
+    st.button("Abrir modo volume (dados sintéticos)", key="abrir_modo_volume",
+              on_click=lambda: st.session_state.update(modo_volume=True))
+    st.stop()
+
 vol_data = _load_synthetic_vol()
 
 volume   = vol_data["volume"]

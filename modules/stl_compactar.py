@@ -17,6 +17,7 @@ Sem limpeza topológica: malhas abertas ou defeituosas passam como estão.
 """
 from __future__ import annotations
 
+import gc
 import hashlib
 import json
 import os
@@ -29,12 +30,13 @@ import numpy as np
 
 ALVO_TRIANGULOS = 300_000          # por estrutura
 LIMITE_SAIDA_BYTES = 30 * 1024 * 1024   # mesmo teto de 30 MB do app (commit 76d235f)
-BLOCO_TRIANGULOS = 1_000_000
-# Memória: o Streamlit mantém o arquivo enviado na RAM até o envio ser liberado; somado ao
-# trabalho por bloco (~450 MB medidos com blocos de 1 milhão), isso não pode passar do limite seguro do servidor.
-# ponytail: estimativa fixa; ajuste DCUBIC_LIMITE_MEMORIA_MB conforme a RAM do servidor.
-TRABALHO_MB = 450
-LIMITE_SEGURO_MB = int(os.environ.get("DCUBIC_LIMITE_MEMORIA_MB", "900"))
+BLOCO_TRIANGULOS = 250_000   # blocos menores = pico menor (1 milhão custava ~260 MB de trabalho)
+# Memória: o app grava o envio em disco e libera os bytes do Streamlit ANTES de compactar
+# (app.py, envio em duas etapas); a compactação usa ~TRABALHO_MB por bloco. O processo
+# inteiro não deve passar de DCUBIC_LIMITE_MEMORIA_MB (padrão 800).
+# ponytail: estimativa fixa de trabalho; ajuste DCUBIC_LIMITE_MEMORIA_MB conforme a RAM do servidor.
+TRABALHO_MB = 150
+LIMITE_SEGURO_MB = int(os.environ.get("DCUBIC_LIMITE_MEMORIA_MB", "800"))
 LIMITE_MEMBRO_ZIP = 2 * 1024 ** 3   # recusa membros de zip acima de 2 GB descompactados
 PASTA_CACHE = os.path.join(tempfile.gettempdir(), "dcubic_upload_cache")
 _K_GRADE = 2.4   # triângulos ≈ _K_GRADE * área / célula² (agrupamento de vértices; calibrável)
@@ -46,13 +48,42 @@ class MemoriaInsuficiente(Exception):
     """O envio excede o limite seguro de memória do servidor."""
 
 
-def checar_memoria(bytes_envio: int) -> None:
+def rss_mb():
+    """Memória residente do processo em MB (Linux: /proc; senão psutil, se instalado; senão None)."""
+    try:
+        with open("/proc/self/statm") as f:
+            return int(f.read().split()[1]) * os.sysconf("SC_PAGE_SIZE") / 1024 ** 2
+    except (OSError, ValueError, IndexError):
+        pass
+    try:
+        import psutil
+        return psutil.Process().memory_info().rss / 1024 ** 2
+    except Exception:
+        return None
+
+
+def checar_tamanho(bytes_envio: int) -> None:
+    """Etapa 1 do envio: recusa com mensagem clara quando o envio, somado ao trabalho de
+    compactação, passa do limite. Não olha o RSS (ainda inclui os bytes do envio)."""
     mb = bytes_envio / 1024 ** 2
     if mb + TRABALHO_MB > LIMITE_SEGURO_MB:
         raise MemoriaInsuficiente(
             f"O envio tem {mb:.0f} MB e, somado ao trabalho de compactação (~{TRABALHO_MB} MB), "
             f"excede o limite seguro de memória do servidor ({LIMITE_SEGURO_MB} MB). "
             "Envie o STL compactado em .zip (no Mac: clique direito no arquivo > Comprimir)."
+        )
+
+
+def checar_memoria() -> None:
+    """Etapa 2 do envio (bytes do envio já liberados): recusa com mensagem clara quando a
+    memória atual do processo, somada ao trabalho de compactação, passa do limite."""
+    gc.collect()
+    atual = rss_mb()
+    if atual is not None and atual + TRABALHO_MB > LIMITE_SEGURO_MB:
+        raise MemoriaInsuficiente(
+            f"O servidor está usando {atual:.0f} MB de memória; a compactação precisa de mais "
+            f"~{TRABALHO_MB} MB e passaria do limite seguro ({LIMITE_SEGURO_MB} MB). "
+            "Clique em 'Limpar STL', aguarde alguns segundos e envie novamente."
         )
 
 
@@ -202,6 +233,7 @@ def compactar(caminho_bin: str, origem, celula: float, destino: str) -> int:
         contagens.append(np.bincount(inv, minlength=len(uk)))
         ok = (k[:, 0] != k[:, 1]) & (k[:, 1] != k[:, 2]) & (k[:, 0] != k[:, 2])   # não degenerados
         tris.append(k[ok])
+        del k, inv, vf, ok, v
     if not tris:
         raise ValueError("STL sem triângulos válidos.")
     uk, inv = np.unique(np.concatenate(chaves), return_inverse=True)
@@ -210,8 +242,12 @@ def compactar(caminho_bin: str, origem, celula: float, destino: str) -> int:
     t = np.concatenate(tris)
     _, primeiro = np.unique(np.sort(t, axis=1), axis=0, return_index=True)   # duplicados (qualquer orientação)
     faces = np.searchsorted(uk, t[np.sort(primeiro)])
+    del chaves, somas, contagens, tris, s, c, t, primeiro, inv
     _gravar_stl(destino, verts[faces])
-    return len(faces)
+    n = len(faces)
+    del verts, faces, uk
+    gc.collect()
+    return n
 
 
 def _gravar_stl(destino: str, tri: np.ndarray) -> None:
@@ -228,13 +264,17 @@ def _gravar_stl(destino: str, tri: np.ndarray) -> None:
 # ── Fluxo completo ──────────────────────────────────────────────────────────────
 
 def receber_e_compactar(envios, pasta: str = PASTA_CACHE, alvo: int = ALVO_TRIANGULOS, progresso=None):
-    """Recebe (.stl/.zip), mede, compacta com grade comum e devolve uma lista de dicts:
-    nome, caminho (STL compactado), bytes_antes, bytes_depois, tri_antes, tri_depois, cache."""
+    """Recebe (.stl/.zip) e compacta. O app usa as duas etapas separadas (receber ->
+    liberar o envio da RAM -> compactar_recebidos); esta função junta as duas."""
+    return compactar_recebidos(receber(envios, pasta), pasta, alvo, progresso)
+
+
+def compactar_recebidos(recebidos, pasta: str = PASTA_CACHE, alvo: int = ALVO_TRIANGULOS, progresso=None):
+    """Mede e compacta, UM ARQUIVO POR VEZ e com grade comum, os arquivos já gravados por
+    `receber`. Devolve uma lista de dicts: nome, caminho (STL compactado), bytes_antes,
+    bytes_depois, tri_antes, tri_depois, cache."""
     p = progresso or (lambda frac, texto: None)
     os.makedirs(os.path.join(pasta, "info"), exist_ok=True)
-
-    p(0.02, "Recebendo…")
-    recebidos = receber(envios, pasta)
     if not recebidos:
         raise ValueError("Nenhum arquivo .stl encontrado no envio.")
 
@@ -252,6 +292,7 @@ def receber_e_compactar(envios, pasta: str = PASTA_CACHE, alvo: int = ALVO_TRIAN
                 cam_bin = cam[:-4] + "_bin.stl"
                 ascii_para_binario(cam, cam_bin)
             info = medir(cam_bin)
+            gc.collect()
             with open(j, "w") as f:
                 json.dump(info, f)
             binarios.append(cam_bin)

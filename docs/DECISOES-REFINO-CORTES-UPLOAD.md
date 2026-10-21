@@ -105,3 +105,20 @@ que a div. Decisões (feitas no worktree `refino/correcao-camera`, a integrar à
 - **B — Exemplo substitui (a556942):** carregar um dente de exemplo troca o dente atual; o novo abre na câmera padrão. Estado de "Mostrar plano no 3D" preservado entre trocas.
 - **C — Envio com compactação (a58945a):** `.stl`/`.zip` na barra lateral, até 1 GB; compactação por agrupamento de vértices com grade comum (~300 mil triângulos por estrutura, sobreposição mantida), cache por SHA-1, resultados de 2,4 a 15,0 MB (teto 30 MB). STL de 744 MB enviado em `.zip` de 114 MB: 7,6 s, pico 430 MB no teste isolado.
 - **Pendências/limitações:** unidade "un." até haver calibração de voxel; o pico de RSS do servidor inteiro chegou a 1.299 MB durante os testes de envio pela interface (Streamlit + 3D + cortes + envio na RAM) — acima de 1 GB, o que pede atenção antes de publicar no Streamlit Cloud (ajustar `DCUBIC_LIMITE_MEMORIA_MB` e/ou reduzir caches do 3D); envio pela interface testado com arquivo injetado via JavaScript no navegador embutido, a conferir com o seletor de arquivos real.
+
+## Etapa D1 — Memória (21/10/2026) — CONCLUÍDA (pico transitório aceito)
+- Patch aprovado reaplicado (caches com max_entries=2, STL lido do disco, bytes do envio liberados).
+- Modo volume sob demanda: no login só aparece o aviso + botão "Abrir modo volume (dados sintéticos)";
+  dados, arrays e figuras do modo volume só são criados após o clique. RSS logo após o login: ~200 MB.
+- `.streamlit/config.toml`: `maxUploadSize = 200`; legenda do envio com o limite de 200 MB e a orientação do .zip.
+- Envio em duas etapas: etapa 1 usa `checar_tamanho` (só tamanho, sem RSS); etapa 2 limpa os caches,
+  roda `gc.collect()` e só então `checar_memoria` (RSS).
+- `use_container_width` → `width="stretch"` apenas em `st.dataframe`; `st.plotly_chart` no Streamlit 1.50
+  não tem o parâmetro `width` (mantido o original nos 7 pontos).
+- Medição (8504, limite 800 MB): no macOS padrão o envio C foi RECUSADO (RSS 1.044 MB na etapa 2), porque
+  o macOS retém blocos grandes liberados (comprovado em teste isolado; `MallocLargeCache=0` desliga a retenção).
+  Com `MallocLargeCache=0` (comportamento equivalente ao Linux) o envio C foi ACEITO, mas o pico foi 936 MB:
+  o próprio Streamlit 1.50 recebe o envio inteiro na RAM (tornado + `parse_body_arguments`, ~4 cópias do zip
+  por ~0,5 s) somado à base com o Molar carregado (~505 MB). Isso fica fora do código do app.
+- **Decisão do Dr. Abe: opção 1 — ACEITOU o pico transitório de ~936 MB no envio** (causado por `parse_body_arguments` do Streamlit 1.50, que recebe o arquivo inteiro na RAM por ~0,5 s), medido com `MallocLargeCache=0` (equivalente ao Linux). No macOS padrão a checagem pode recusar o envio por retenção de memória do alocador.
+- Medições: login 467,8 → 200,6 MB; A) Molar 701,8 → 491,5; B) Cortes + plano 696,6 → 514,9; C) envio zip 114 MB 1.528,8 → 936,4 MB.
