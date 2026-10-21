@@ -132,3 +132,9 @@ que a div. Decisões (feitas no worktree `refino/correcao-camera`, a integrar à
 ## Etapa D3 — Aba Cortes não pula (21/10/2026)
 - `st.tabs(["3D","Cortes"])` trocado por `st.segmented_control` com `key="aba_visualizacao"` (disponível no Streamlit 1.50): o rerun do checkbox "Mostrar plano no 3D" não volta mais ao 3D.
 - Só a aba ativa é renderizada; o estado dos widgets de Cortes (plano, eixo, sliders) é preservado por reatribuição em `session_state`, e o plano do 3D é lido de lá (funciona também com a aba 3D ativa).
+
+## Unidade dos STL (21/10/2026)
+- As coordenadas dos STL exportados pelo CTAnalyser estão em **voxels**, não em mm, apesar do cabeçalho "unit: mm" (todas as coordenadas terminam em ,5, centro de voxel).
+- Bounding box do Molar (idêntico ao de `molar_sup__raiz_voi_.stl`): 819 x 1233 x 1165 unidades.
+- Voxel estimado: 15–19 µm (supondo dente de 18–22 mm de comprimento) — apenas referência, não calibração.
+- Calibração pendente: obter o valor exato no arquivo .log de reconstrução (NRecon), linha "Pixel Size (um)". Até lá, `slices.UNIDADE` continua "un.".
