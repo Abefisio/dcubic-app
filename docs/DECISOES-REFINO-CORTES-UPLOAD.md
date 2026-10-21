@@ -78,3 +78,10 @@ que a div. Decisões (feitas no worktree `refino/correcao-camera`, a integrar à
 - **Unidade:** mantida "un." (unidades nativas). O pedido falava em mm, mas os STL têm ~1.400 unidades de comprimento (voxels sem calibração); rotular como mm seria incorreto. A escala é preservada 1:1 em relação ao STL; basta trocar `slices.UNIDADE` (e, se preciso, aplicar o fator de voxel) quando houver calibração.
 - **Chave do cache dos cortes:** (caminho + mtime) em vez de hash do conteúdo — equivalente para arquivos em disco e sem custo de reler arquivos grandes a cada rerun.
 - **Observação de interface:** na primeira vez em que "Mostrar plano no 3D" é ligado numa sessão, o Streamlit volta para a aba 3D (comportamento do `st.tabs`); nas mudanças seguintes a aba Cortes permanece.
+
+## Etapa B — Dente de exemplo substitui o anterior
+
+- **Regra:** "Carregar dente de exemplo" chama `_trocar_dente(paths)`, que substitui `stl_paths` e limpa `_stl_selected`/`_stl_last` (equivale a "Limpar STL" + carregar). Todas as estruturas de um zip de exemplo entram juntas (mesmo dente).
+- **Exemplos avulsos (Esmalte, Dentina, Molar):** tratados como estruturas do MESMO dente; continuam somando entre si quando a lista atual só tem avulsos. Vindo de outro dente (zip, pasta ou upload), substituem. Premissa: os três avulsos são do mesmo dente; se não forem, basta trocar o `if` por `_trocar_dente([_dest])`.
+- **Câmera:** a chave de câmera por dente (3e5eb81) faz o dente novo abrir na câmera padrão (eye 1,6/1,6/1,3) sem alteração adicional.
+- **Correção encontrada no teste:** o estado de "Mostrar plano no 3D" (e do eixo) era descartado pelo Streamlit nas execuções interrompidas por `st.rerun()` (troca de dente, Limpar STL), porque o widget não chegava a ser desenhado. Solução: reatribuir `cortes_plano` e `cortes_plano_eixo` em `st.session_state` antes desses botões (padrão recomendado pelo Streamlit).

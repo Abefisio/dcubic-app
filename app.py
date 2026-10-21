@@ -365,6 +365,19 @@ def _stl_valido(_p):
     except Exception:
         return False
 
+# Opções da aba Cortes: reatribuídas ANTES dos botões que chamam st.rerun() (troca de
+# dente, Limpar STL); senão o Streamlit descarta o estado do widget não desenhado.
+for _k, _padrao in (("cortes_plano", False), ("cortes_plano_eixo", "Axial (Z)")):
+    st.session_state[_k] = st.session_state.get(_k, _padrao)
+
+
+def _trocar_dente(_paths):
+    """Dente de exemplo novo SUBSTITUI o anterior (equivale a Limpar STL + carregar)."""
+    st.session_state["stl_paths"] = list(_paths)
+    st.session_state.pop("_stl_selected", None)
+    st.session_state.pop("_stl_last", None)
+
+
 if st.sidebar.button("Carregar dente de exemplo", key="drive_sample_btn"):
     if _sample_sel == "— selecione —":
         st.sidebar.warning("Selecione uma estrutura antes de carregar.")
@@ -409,10 +422,7 @@ if st.sidebar.button("Carregar dente de exemplo", key="drive_sample_btn"):
             if not _validos:
                 st.sidebar.warning(f"Nenhum STL válido encontrado em {_pasta}.")
             else:
-                _existing = st.session_state.get("stl_paths", [])
-                _novos = [p for p in _validos if p not in _existing]
-                if _novos:
-                    st.session_state["stl_paths"] = _existing + _novos
+                _trocar_dente(_validos)  # todas as estruturas do zip = um único dente
                 st.rerun()
     else:
         _fid = _DRIVE_SAMPLES[_sample_sel]
@@ -442,8 +452,13 @@ if st.sidebar.button("Carregar dente de exemplo", key="drive_sample_btn"):
                 _dest = None
         if _dest and _stl_valido(_dest):
             _existing_paths = st.session_state.get("stl_paths", [])
-            if _dest not in _existing_paths:
-                st.session_state["stl_paths"] = _existing_paths + [_dest]
+            # Esmalte/Dentina/Molar avulsos = estruturas do MESMO dente: somam entre si.
+            # Vindo de outro dente (zip, pasta ou upload), substitui.
+            if _existing_paths and all(os.path.dirname(_p) == _SAMPLE_DIR for _p in _existing_paths):
+                if _dest not in _existing_paths:
+                    st.session_state["stl_paths"] = _existing_paths + [_dest]
+            else:
+                _trocar_dente([_dest])
             st.rerun()
 
 # Quando o botão for clicado: persiste apenas CAMINHOS em session_state.
