@@ -36,6 +36,22 @@ e zip em `~/Desktop/BACKUPS-DCUBIC/dcubic-app-repo-20261021-1020.zip`).
 - Cada ajuste recarrega o iframe (o HTML muda); medido ≈ 1,1–1,3 s do ajuste até o 3D pronto,
   com rerun no servidor de ≈ 0,08–0,12 s.
 
+## Bloco 1 — Correção da câmera e do tamanho do 3D (2026-10-21)
+Bug relatado na produção: câmera salva em `dcubic_stl_camera` com `center` fora da cena
+(-7.39, -0.72, 4.90), restaurada a cada carga; vista padrão aproximada demais; canvas WebGL menor
+que a div. Decisões (feitas no worktree `refino/correcao-camera`, a integrar à
+`refino/cortes-upload-painel` após o Bloco 2):
+- **Validação antes de restaurar:** a câmera salva só é usada se `center` ∈ [-1,1] nos 3 eixos,
+  distância eye–center ∈ [0.3, 6] e nenhum valor NaN/ausente. Inválida → chave apagada, vale a padrão.
+  Movimentos do usuário também só são gravados se passarem nessa validação.
+- **Chave por dente:** `dcubic_stl_camera_` + md5 (12 caracteres) dos nomes dos arquivos carregados
+  (`stl_paths`). Dente novo começa na vista padrão; voltar a um dente restaura a câmera dele.
+  A chave global antiga `dcubic_stl_camera` é apagada ao abrir o 3D.
+- **Câmera padrão:** center (0,0,0), eye (1.6, 1.6, 1.3) — também aplicada na própria figura.
+- **Altura:** o iframe recebe `height: max(600px, 85vh)` (vh da página-mãe); a figura usa
+  `autosize=True` sem altura/largura fixas (anulando o `height=520` do viewer3d).
+- **Canvas:** `Plotly.Plots.resize(gd)` após o primeiro desenho e em `window.resize`.
+
 ## Pendências (NÃO executar sem "prossiga")
 
 - **Bloco 2:** reaproveitar `create_plotly_3d(clip_plane=...)` para mostrar o plano de corte no 3D,

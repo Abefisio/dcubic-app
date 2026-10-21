@@ -3,6 +3,7 @@ DCubic Image System Platform
 Análise de volumes 3D micro-CT — USP/FOUSP — Pesquisa acadêmica
 """
 
+import hashlib
 import json
 import os
 import traceback as _tb
@@ -556,13 +557,14 @@ if _is_stl:
     # do controle oculto ao alternar Cinza/Cor personalizada.
     for _k, _padrao in (("ap_opac", 100), ("ap_tom", 235), ("ap_cor", "#ebebeb")):
         _ss[_k] = _ss.get(_k, _padrao)
-    _CAM_PADRAO = {"eye": {"x": 1.5, "y": 1.5, "z": 1.2}, "up": {"x": 0, "y": 0, "z": 1},
+    # Padrão enquadra o dente inteiro, centralizado e com folga
+    _CAM_PADRAO = {"eye": {"x": 1.6, "y": 1.6, "z": 1.3}, "up": {"x": 0, "y": 0, "z": 1},
                    "center": {"x": 0, "y": 0, "z": 0}}
     _VISTAS = {
         "Topo":        {"eye": {"x": 0, "y": 0, "z": 2.2}, "up": {"x": 0, "y": 1, "z": 0}},
         "Frente":      {"eye": {"x": 0, "y": -2.2, "z": 0}, "up": {"x": 0, "y": 0, "z": 1}},
         "Lado":        {"eye": {"x": 2.2, "y": 0, "z": 0}, "up": {"x": 0, "y": 0, "z": 1}},
-        "Perspectiva": {"eye": {"x": 1.5, "y": 1.5, "z": 1.2}, "up": {"x": 0, "y": 0, "z": 1}},
+        "Perspectiva": {"eye": {"x": 1.6, "y": 1.6, "z": 1.3}, "up": {"x": 0, "y": 0, "z": 1}},
     }
 
     def _ap_marca(_chave):
@@ -663,10 +665,11 @@ if _is_stl:
                 uirevision="constant",  # preserva câmera entre reruns do Streamlit
                 modebar=dict(orientation="v"),
                 legend=dict(x=0.01, y=0.99, xanchor="left"),  # libera o canto direito para o ícone de câmera
-                height=1156,
+                autosize=True, height=None,  # sem altura/largura fixas (anula o 520 do viewer3d): ocupa 100% da div
                 margin=dict(l=0, r=0, t=0, b=0),
                 scene=dict(
                     dragmode="orbit",
+                    camera=_CAM_PADRAO,
                     xaxis=dict(title=dict(font=dict(size=18)), tickfont=dict(size=15)),
                     yaxis=dict(title=dict(font=dict(size=18)), tickfont=dict(size=15)),
                     zaxis=dict(title=dict(font=dict(size=18)), tickfont=dict(size=15)),
@@ -704,19 +707,41 @@ if _is_stl:
             "cor": _ap_cor,
             "lock": bool(_ss.get("ap_lock")),
             "cmd": _ss.get("_ap_cmd"),
+            "cam_padrao": _CAM_PADRAO,
+            # Uma chave de câmera por dente (hash dos nomes dos arquivos carregados):
+            # dente novo não herda a câmera de outro.
+            "kcam": "dcubic_stl_camera_" + hashlib.md5("|".join(sorted(
+                os.path.basename(_p) for _p in _ss.get("stl_paths", []))).encode()).hexdigest()[:12],
         }
         import streamlit.components.v1 as _components
         _ctrl_html = """
 <style>
 html,body{margin:0;padding:0;overflow:hidden;height:100%;background:#0f0f0f;color:#eee;font-family:sans-serif}
+#stl_plot{width:100%;height:100%}
 </style>
 <script>
 (function(){
   var AP=__AP__;
-  var K='dcubic_stl_camera', KN='dcubic_stl_cmd_n';
+  var K=AP.kcam, KN='dcubic_stl_cmd_n';
   var savedCamera=null, applying=false;
   function ler(k){try{return localStorage.getItem(k);}catch(e){return null;}}
   function gravar(k,v){try{localStorage.setItem(k,v);}catch(e){}}
+  function apagar(k){try{localStorage.removeItem(k);}catch(e){}}
+  apagar('dcubic_stl_camera');  // chave global antiga (podia guardar câmera fora da cena)
+
+  // Altura do 3D = 85% da janela do navegador (mínimo 600 px); o vh é resolvido na página-mãe.
+  try{ if(window.frameElement) window.frameElement.style.height='max(600px, 85vh)'; }catch(e){}
+
+  // Câmera utilizável? center em [-1,1], distância eye–center em [0.3, 6], sem NaN.
+  function camValida(c){
+    if(!c||!c.eye) return false;
+    var ce=c.center||{x:0,y:0,z:0}, e=c.eye, u=c.up||{x:0,y:0,z:1};
+    var v=[ce.x,ce.y,ce.z,e.x,e.y,e.z,u.x,u.y,u.z];
+    for(var i=0;i<v.length;i++) if(typeof v[i]!=='number'||!isFinite(v[i])) return false;
+    if(Math.abs(ce.x)>1||Math.abs(ce.y)>1||Math.abs(ce.z)>1) return false;
+    var d=Math.sqrt(Math.pow(e.x-ce.x,2)+Math.pow(e.y-ce.y,2)+Math.pow(e.z-ce.z,2));
+    return d>=0.3&&d<=6;
+  }
 
   function init(){
     var gd=document.getElementById('stl_plot');
@@ -731,13 +756,17 @@ html,body{margin:0;padding:0;overflow:hidden;height:100%;background:#0f0f0f;colo
     if(AP.cmd&&String(AP.cmd.n)!==ler(KN)){
       cam=AP.cmd.cam; gravar(KN,String(AP.cmd.n)); gravar(K,JSON.stringify(cam));
     } else {
-      try{var s=ler(K); if(s) cam=JSON.parse(s);}catch(e){}
+      try{var s=ler(K); if(s) cam=JSON.parse(s);}catch(e){cam=null;}
+      if(cam&&!camValida(cam)){cam=null; apagar(K);}  // corrompida: descarta e apaga
     }
+    if(!cam) cam=AP.cam_padrao;
     savedCamera=cam;
-    var lay={'scene.dragmode':AP.lock?false:'orbit'};
-    if(cam) lay['scene.camera']=cam;
+    var lay={'scene.dragmode':AP.lock?false:'orbit','scene.camera':cam};
     applying=true;
-    Plotly.relayout(gd,lay).then(function(){applying=false;});
+    Plotly.relayout(gd,lay).then(function(){applying=false; Plotly.Plots.resize(gd);});
+
+    // Canvas acompanha o tamanho da div (iframe redimensionado junto com a janela)
+    window.addEventListener('resize',function(){Plotly.Plots.resize(gd);});
 
     // ---- LOCK: câmera fixa; sem lock, cada movimento é salvo no localStorage ----
     gd.on('plotly_relayout',function(ev){
@@ -745,7 +774,7 @@ html,body{margin:0;padding:0;overflow:hidden;height:100%;background:#0f0f0f;colo
       if(AP.lock&&savedCamera){
         applying=true;
         Plotly.relayout(gd,{'scene.camera':savedCamera}).then(function(){applying=false;});
-      } else if(!AP.lock){
+      } else if(!AP.lock&&camValida(ev['scene.camera'])){
         savedCamera=JSON.parse(JSON.stringify(ev['scene.camera']));
         gravar(K,JSON.stringify(savedCamera));
       }
@@ -763,7 +792,8 @@ html,body{margin:0;padding:0;overflow:hidden;height:100%;background:#0f0f0f;colo
             + _plot_frag
             + "</body></html>"
         )
-        _components.html(_full_html, height=1250, scrolling=False)
+        # 800 px é só o valor inicial: o script ajusta o iframe para max(600px, 85vh).
+        _components.html(_full_html, height=800, scrolling=False)
     else:
         st.info("Ative ao menos uma estrutura na barra lateral para visualizar.")
 
