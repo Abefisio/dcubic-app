@@ -273,7 +273,7 @@ def _load_stl_from_paths(path_mtime_pairs, decimate_target: int = 200_000):
     return load_meshes(_files, cache_keys=_cache_keys, decimate_target=decimate_target)
 
 
-@st.cache_resource(show_spinner="Preparando cortes…")
+@st.cache_resource(show_spinner="Preparando cortes…", max_entries=6)  # só as estruturas recentes na RAM
 def _trimesh_cached(caminho, mtime, n_faces_original, _malha_pv):
     """Malha trimesh carregada 1x por arquivo (chave: caminho + mtime)."""
     return _slices.carregar_trimesh(caminho, n_faces_original, _malha_pv)
@@ -330,6 +330,62 @@ else:
     _stl_folder = ""
     _load_folder_btn = False
 
+# Opções da aba Cortes: reatribuídas ANTES dos botões que chamam st.rerun() (troca de
+# dente, Limpar STL); senão o Streamlit descarta o estado do widget não desenhado.
+for _k, _padrao in (("cortes_plano", False), ("cortes_plano_eixo", "Axial (Z)")):
+    st.session_state[_k] = st.session_state.get(_k, _padrao)
+
+
+def _trocar_dente(_paths):
+    """Dente novo (exemplo ou envio) SUBSTITUI o anterior (equivale a Limpar STL + carregar)."""
+    st.session_state["stl_paths"] = list(_paths)
+    st.session_state.pop("_upl_msg", None)
+    st.session_state.pop("_stl_selected", None)
+    st.session_state.pop("_stl_last", None)
+
+
+# ---------------------------------------------------------------------------
+# ENVIO DE STL — .stl ou .zip (várias estruturas do MESMO dente). O arquivo é gravado em
+# disco por blocos e compactado automaticamente (modules/stl_compactar.py); o resultado
+# entra em stl_paths e segue o mesmo fluxo do 3D e dos Cortes.
+# ---------------------------------------------------------------------------
+st.sidebar.markdown("---")
+st.sidebar.subheader("Enviar STL")
+_upl_n = st.session_state.setdefault("_upl_n", 0)
+_envios = st.sidebar.file_uploader(
+    "Estruturas do mesmo dente (.stl ou .zip)",
+    type=["stl", "zip"],
+    accept_multiple_files=True,
+    key=f"upl_stl_{_upl_n}",
+    help="Arquivos acima de 200 MB: envie o STL compactado em .zip "
+         "(no Mac: clique direito no arquivo > Comprimir)",
+)
+if _envios:
+    from modules import stl_compactar as _cmp
+    _barra = st.sidebar.progress(0.0, text="Recebendo…")
+    try:
+        _cmp.checar_memoria(sum(_e.size for _e in _envios))
+        _res = _cmp.receber_e_compactar(
+            _envios, progresso=lambda f, t: _barra.progress(min(float(f), 1.0), text=t))
+        _trocar_dente([_r["caminho"] for _r in _res])
+        st.session_state["_upl_msg"] = ("ok", _res)
+    except Exception as _ue:  # inclui MemoriaInsuficiente (mensagem já orienta o usuário)
+        st.session_state["_upl_msg"] = ("erro", str(_ue))
+    # Uploader novo: o Streamlit descarta da memória os bytes do envio anterior.
+    st.session_state["_upl_n"] = _upl_n + 1
+    st.rerun()
+_upl_msg = st.session_state.get("_upl_msg")
+if _upl_msg and _upl_msg[0] == "erro":
+    st.sidebar.error(_upl_msg[1])
+elif _upl_msg:
+    _mb = lambda b: f"{b / 1024 ** 2:.1f} MB".replace(".", ",")
+    _n = lambda n: f"{n:,}".replace(",", ".")
+    for _r in _upl_msg[1]:
+        st.sidebar.caption(
+            f"**{_r['nome']}**: {_mb(_r['bytes_antes'])} → {_mb(_r['bytes_depois'])}; "
+            f"{_n(_r['tri_antes'])} → {_n(_r['tri_depois'])} triângulos"
+            + (" (do cache)" if _r["cache"] else ""))
+
 # ---------------------------------------------------------------------------
 # DENTES DE EXEMPLO — Drive (arquivo único) ou Drive (zip com múltiplas estruturas)
 # ---------------------------------------------------------------------------
@@ -364,19 +420,6 @@ def _stl_valido(_p):
             return not _fv.read(5).startswith(b"<")
     except Exception:
         return False
-
-# Opções da aba Cortes: reatribuídas ANTES dos botões que chamam st.rerun() (troca de
-# dente, Limpar STL); senão o Streamlit descarta o estado do widget não desenhado.
-for _k, _padrao in (("cortes_plano", False), ("cortes_plano_eixo", "Axial (Z)")):
-    st.session_state[_k] = st.session_state.get(_k, _padrao)
-
-
-def _trocar_dente(_paths):
-    """Dente de exemplo novo SUBSTITUI o anterior (equivale a Limpar STL + carregar)."""
-    st.session_state["stl_paths"] = list(_paths)
-    st.session_state.pop("_stl_selected", None)
-    st.session_state.pop("_stl_last", None)
-
 
 if st.sidebar.button("Carregar dente de exemplo", key="drive_sample_btn"):
     if _sample_sel == "— selecione —":
@@ -485,6 +528,7 @@ if _load_folder_btn:
             st.session_state.pop("_stl_selected", None)
 
 if st.sidebar.button("Limpar STL", key="stl_clear"):
+    st.session_state.pop("_upl_msg", None)
     st.session_state.pop("stl_paths", None)
     st.session_state.pop("_stl_selected", None)
     st.session_state.pop("_stl_last", None)
