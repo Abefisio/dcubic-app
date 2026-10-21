@@ -40,3 +40,7 @@ env -u PYTHONDONTWRITEBYTECODE python3 -m streamlit run app.py --server.headless
 - O download do Drive grava num arquivo temporário único (`tempfile.mkstemp`, `drive_<id>_<aleatório>.part`) em vez do nome fixo `drive_<id>.part`: dois usuários com o mesmo link não sobrescrevem mais um ao outro.
 - `limpar_cache_antigo()` roda 1 vez por processo do servidor (`st.cache_resource` em `app.py`): apaga arquivos com mais de 2 dias **somente dentro** da pasta de cache do app (`PASTA_CACHE` = `<tmp>/dcubic_upload_cache`) e as subpastas que ficarem vazias. Recusa qualquer pasta que não se chame `dcubic_upload_cache` (caminho vazio, raiz, home, `/tmp`) e não segue links.
 - Pendente (Dr. Abe, no painel do Streamlit Cloud): criar o secret `DCUBIC_MAX_DRIVE_MB = 1024`.
+
+### Item 5 — Cache de dentes mantido ao trocar de seleção
+
+- Removido `_load_stl_from_paths.clear()` (e o estado `_stl_last`, que só servia a ele). O `max_entries=2` do `st.cache_resource` continua limitando a 2 dentes na RAM; voltar a um dos 2 dentes mais recentes não relê o disco. A limpeza explícita antes de compactar um envio novo (etapa 2) foi mantida.

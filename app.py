@@ -386,7 +386,6 @@ def _trocar_dente(_paths):
     st.session_state["stl_paths"] = list(_paths)
     st.session_state.pop("_upl_msg", None)
     st.session_state.pop("_stl_selected", None)
-    st.session_state.pop("_stl_last", None)
 
 
 # ---------------------------------------------------------------------------
@@ -674,7 +673,6 @@ if st.sidebar.button("Limpar STL", key="stl_clear"):
     st.session_state.pop("_upl_msg", None)
     st.session_state.pop("stl_paths", None)
     st.session_state.pop("_stl_selected", None)
-    st.session_state.pop("_stl_last", None)
     st.rerun()
 
 # Seletor de estruturas — unifica uploads e pasta na mesma lista
@@ -689,10 +687,8 @@ if _opcoes:
         format_func=lambda p: os.path.splitext(os.path.basename(p))[0],
         key="_stl_selected",
     )
-    _sel_tuple = tuple(sorted(_sel_paths))
-    if _sel_tuple != st.session_state.get("_stl_last"):
-        _load_stl_from_paths.clear()
-        st.session_state["_stl_last"] = _sel_tuple
+    # Trocar de dente/seleção não esvazia o cache: max_entries=2 já limita a 2 dentes na RAM
+    # e voltar a um dente recente não relê do disco.
     _stl_path_mtime_dedup = [
         (_p, os.path.getmtime(_p)) for _p in _sel_paths if _p and os.path.isfile(_p)
     ]
