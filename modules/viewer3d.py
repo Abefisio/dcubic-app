@@ -140,6 +140,7 @@ def create_plotly_3d(
             opacity=op,
             name=name,
             showlegend=True,
+            hoverinfo="skip",
             lighting=dict(
                 ambient=0.4, diffuse=0.8, specular=0.3,
                 roughness=0.5, fresnel=0.2,
@@ -150,9 +151,9 @@ def create_plotly_3d(
     fig.update_layout(
         uirevision="constant",  # preserva câmera/zoom/rotação entre reruns do Streamlit
         scene=dict(
-            xaxis=dict(title="X (mm)", backgroundcolor="rgb(10,10,10)", gridcolor="rgb(40,40,40)", range=_xr),
-            yaxis=dict(title="Y (mm)", backgroundcolor="rgb(10,10,10)", gridcolor="rgb(40,40,40)", range=_yr),
-            zaxis=dict(title="Z (mm)", backgroundcolor="rgb(10,10,10)", gridcolor="rgb(40,40,40)", range=_zr),
+            xaxis=dict(visible=False, range=_xr),
+            yaxis=dict(visible=False, range=_yr),
+            zaxis=dict(visible=False, range=_zr),
             bgcolor="rgb(15,15,15)",
             aspectmode="manual",
             aspectratio=_aspect,

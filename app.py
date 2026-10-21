@@ -597,6 +597,7 @@ if _is_stl:
                         color="#7B2FBE", opacity=1.0,
                         name="Interior",
                         showlegend=False,
+                        hoverinfo="skip",
                     ))
             except ValueError as _ve:
                 st.warning("Não foi possível gerar o interior: " + str(_ve))
