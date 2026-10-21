@@ -165,3 +165,13 @@ def create_plotly_3d(
         margin=dict(l=0, r=0, t=10, b=0),
     )
     return fig
+
+
+def limpar_figura_3d(fig):
+    """Oculta eixos 3D (números, títulos, grade) e desativa a caixa de coordenadas no hover."""
+    fig.update_scenes(xaxis_visible=False, yaxis_visible=False, zaxis_visible=False)
+    # Acréscimo: spikes (linhas-guia até os eixos) também exibem coordenadas no hover 3D.
+    fig.update_scenes(xaxis_showspikes=False, yaxis_showspikes=False, zaxis_showspikes=False)
+    fig.update_traces(hoverinfo="skip", hovertemplate=None)
+    fig.update_layout(hovermode=False)
+    return fig

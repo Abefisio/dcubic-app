@@ -46,7 +46,7 @@ import streamlit_authenticator as stauth
 from modules.loader import load_volume
 from modules.viewer2d import render_triplanar, make_overlay_fig
 from modules.segmentation import segment_volume, TISSUE_PALETTE, DEFAULT_THRESHOLDS
-from modules.viewer3d import build_all_meshes, create_plotly_3d
+from modules.viewer3d import build_all_meshes, create_plotly_3d, limpar_figura_3d
 from modules.metrics import (
     compute_volumes, compute_surface_areas, compute_distance,
     mesh_to_stl_bytes, mesh_to_obj_bytes,
@@ -640,6 +640,7 @@ if _is_stl:
         )
         # Render via iframe HTML: todos os controles em JS puro — sem rerun.
         import streamlit.components.v1 as _components
+        limpar_figura_3d(_fig_stl)
         _plot_frag = _fig_stl.to_html(
             include_plotlyjs="cdn", full_html=False, div_id="stl_plot",
             config={"displayModeBar": True},
@@ -1078,6 +1079,7 @@ with tab_3d:
         opacities=opacities,
         clip_z_mm=clip_z_mm if apply_clip else None,
     )
+    limpar_figura_3d(fig_3d)
     st.plotly_chart(fig_3d, use_container_width=True)
 
     st.caption(
