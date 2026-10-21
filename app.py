@@ -44,17 +44,9 @@ stx.CookieManager = _patched_cookie_manager
 
 import streamlit_authenticator as stauth
 
-from modules.loader import load_volume
-from modules.viewer2d import render_triplanar, make_overlay_fig
-from modules.segmentation import segment_volume, TISSUE_PALETTE, DEFAULT_THRESHOLDS
-from modules.viewer3d import build_all_meshes, create_plotly_3d, limpar_figura_3d
-from modules.metrics import (
-    compute_volumes, compute_surface_areas, compute_distance,
-    mesh_to_stl_bytes, mesh_to_obj_bytes,
-)
-from modules.report import generate_pdf
-from modules.anatomy import compute_anatomy
-from modules import references
+from modules.viewer3d import create_plotly_3d, limpar_figura_3d
+# Módulos do modo volume (reportlab, pydicom/tifffile/nibabel, scipy/skimage da anatomia...):
+# importados só quando o modo volume abre — ver "MODO VOLUME" mais abaixo.
 from modules.mesh_loader import load_meshes
 from modules import slices as _slices
 
@@ -1119,6 +1111,21 @@ if not st.session_state.get("modo_volume"):
     st.button("Abrir modo volume (dados sintéticos)", key="abrir_modo_volume",
               on_click=lambda: st.session_state.update(modo_volume=True))
     st.stop()
+
+# Imports tardios do modo volume: o login e o modo STL não pagam por eles. As funções em cache
+# definidas no topo (_load_synthetic_vol, _build_meshes_cached, ...) usam estes nomes globais
+# só quando chamadas, sempre depois desta linha.
+from modules.loader import load_volume
+from modules.viewer2d import render_triplanar, make_overlay_fig
+from modules.segmentation import segment_volume, TISSUE_PALETTE, DEFAULT_THRESHOLDS
+from modules.viewer3d import build_all_meshes
+from modules.metrics import (
+    compute_volumes, compute_surface_areas, compute_distance,
+    mesh_to_stl_bytes, mesh_to_obj_bytes,
+)
+from modules.report import generate_pdf
+from modules.anatomy import compute_anatomy
+from modules import references
 
 vol_data = _load_synthetic_vol()
 

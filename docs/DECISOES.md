@@ -44,3 +44,10 @@ env -u PYTHONDONTWRITEBYTECODE python3 -m streamlit run app.py --server.headless
 ### Item 5 — Cache de dentes mantido ao trocar de seleção
 
 - Removido `_load_stl_from_paths.clear()` (e o estado `_stl_last`, que só servia a ele). O `max_entries=2` do `st.cache_resource` continua limitando a 2 dentes na RAM; voltar a um dos 2 dentes mais recentes não relê o disco. A limpeza explícita antes de compactar um envio novo (etapa 2) foi mantida.
+
+### Itens 7 e 10 — Imports tardios e modo volume sob demanda
+
+- O modo volume **foi mantido** (será usado para volumes reconstruídos de micro-CT). Os módulos dele (`loader` com pydicom/tifffile/nibabel, `viewer2d`, `segmentation`, `metrics`, `report` com reportlab, `anatomy`, `references` e o `build_all_meshes`) são importados só depois do botão "Abrir modo volume", logo após o `st.stop()` que fecha o modo STL.
+- `modules/slices.py`: `trimesh` importado dentro de `para_trimesh`/`carregar_trimesh` (1º corte), não no login. `modules/viewer3d.py`: `skimage.measure.marching_cubes` importado dentro de `build_mesh` (só o modo volume usa).
+- `requirements.txt` **sem alteração**: todos os pacotes têm import em algum `.py` do repositório (inclusive pydicom/tifffile/nibabel no `loader.py`), exceto `shapely` e `networkx`, que são usados pelo trimesh (cortes) e pelo scikit-image — mantidos.
+- Servidor local iniciado sem `PYTHONDONTWRITEBYTECODE` (comando no item 1), para reaproveitar os `.pyc`.
