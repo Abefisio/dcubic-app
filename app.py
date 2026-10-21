@@ -341,15 +341,20 @@ def _trocar_dente(_paths):
 # disco por blocos e compactado automaticamente (modules/stl_compactar.py); o resultado
 # entra em stl_paths e segue o mesmo fluxo do 3D e dos Cortes.
 # ---------------------------------------------------------------------------
+def _segredo(nome):
+    """Valor de configuração: st.secrets tem prioridade; depois a variável de ambiente."""
+    try:
+        _v = st.secrets.get(nome)
+    except Exception:  # sem secrets.toml
+        _v = None
+    return _v or os.environ.get(nome)
+
+
 def _limite_envio_mb():
     """Limite efetivo do envio em MB: DCUBIC_MAX_UPLOAD_MB (st.secrets ou ambiente) tem
     prioridade; sem ele, 200 no Streamlit Community Cloud (detectado por /mount/src ou
     HOSTNAME com "streamlit") e 2048 no Mac/servidor USP."""
-    try:
-        _v = st.secrets.get("DCUBIC_MAX_UPLOAD_MB")
-    except Exception:  # sem secrets.toml
-        _v = None
-    _v = _v or os.environ.get("DCUBIC_MAX_UPLOAD_MB")
+    _v = _segredo("DCUBIC_MAX_UPLOAD_MB")
     if _v:
         return int(_v)
     _no_cloud = os.path.isdir("/mount/src") or "streamlit" in os.environ.get("HOSTNAME", "").lower()
@@ -378,6 +383,26 @@ if _LIMITE_ENVIO_MB < 2048:
 else:
     st.sidebar.caption(f"Limite de {_LIMITE_ENVIO_MB} MB por envio. Malhas acima de 500.000 "
                        "triângulos são reduzidas automaticamente para visualização.")
+# Arquivo grande pelo link do Google Drive: baixado direto para o disco do servidor (não passa
+# pelo navegador nem pelo limite do seletor) e entregue ao MESMO pós-recebimento do envio.
+_LIMITE_DRIVE_MB = int(_segredo("DCUBIC_MAX_DRIVE_MB") or 2048)
+_link_drive = st.sidebar.text_input("Arquivo grande? Cole o link do Google Drive (.stl ou .zip)",
+                                    key="drive_link")
+st.sidebar.caption("No Google Drive: clique direito no arquivo > Compartilhar > Acesso geral: "
+                   "Qualquer pessoa com o link > Copiar link.")
+if st.sidebar.button("Importar do Drive", key="drive_importar") and _link_drive.strip():
+    from modules import stl_compactar as _cmp
+    _barra_drive = st.sidebar.progress(0.0, text="Baixando…")
+    try:
+        st.session_state["_upl_recebidos"] = _cmp.baixar_do_drive(
+            _link_drive, _LIMITE_DRIVE_MB,
+            progresso=lambda f, t: _barra_drive.progress(min(float(f), 1.0), text=t))
+        if not st.session_state["_upl_recebidos"]:
+            st.session_state.pop("_upl_recebidos")
+            raise ValueError("Nenhum arquivo .stl encontrado no arquivo do Drive.")
+    except Exception as _de:
+        st.session_state["_upl_msg"] = ("erro", str(_de))
+    _barra_drive.empty()  # a etapa 2 (abaixo) mostra Reduzindo… / Pronto
 # Envio em duas etapas, para não manter na RAM o arquivo enviado e a compactação ao mesmo tempo:
 #  1) grava os arquivos em disco (por blocos) e troca a chave do uploader -> no rerun o
 #     Streamlit descarta os bytes do envio;
@@ -418,8 +443,8 @@ if "_upl_recebidos" in st.session_state:
     try:
         # Libera o dente anterior antes de compactar (pico de memória menor)
         _load_stl_from_paths.clear(); _trimesh_cached.clear(); _interior_cached.clear()
-        _cmp.checar_memoria(_recebidos)  # etapa 2: malhas REDUZIDAS + RSS (exceto macOS), bytes já liberados
-        _res = _cmp.compactar_recebidos(
+        # etapa 2 (envio e Drive): checagem de memória D1 (malhas REDUZIDAS + RSS, exceto macOS) + compactação
+        _res = _cmp.processar_recebidos(
             _recebidos, progresso=lambda f, t: _barra.progress(min(float(f), 1.0), text=t))
         _trocar_dente([_r["caminho"] for _r in _res])
         st.session_state["_upl_msg"] = ("ok", _res)

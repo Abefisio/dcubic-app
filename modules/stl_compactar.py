@@ -21,6 +21,7 @@ from __future__ import annotations
 import gc
 import hashlib
 import json
+import math
 import os
 import shutil
 import struct
@@ -159,6 +160,125 @@ def receber(envios, pasta: str = PASTA_CACHE):
         elif nome.lower().endswith(".stl"):
             recebidos.append((nome, *_gravar(arq, pasta)))
     return recebidos
+
+
+# ── 1b. Recebendo por link do Google Drive (contorna o limite de envio do Cloud) ────
+
+LIMITE_DRIVE_MB = 2048   # padrão de DCUBIC_MAX_DRIVE_MB (o app lê secrets/ambiente)
+FATOR_DISCO = 2.5        # download (1×) + cópia/extração em recebidos/ (1×) + folga (saída, ASCII->binário)
+
+
+def _apagar(caminho):
+    if os.path.isfile(caminho):
+        os.remove(caminho)
+
+
+class _GravadorLimitado:
+    """Destino do gdown (que grava em blocos de 512 KB): conta os bytes e interrompe o
+    download ao passar do limite ou ao faltar disco; avisa o progresso a cada ~8 MB."""
+
+    def __init__(self, f, limite_bytes, livre_bytes, progresso):
+        self.f, self.limite, self.livre, self.p = f, limite_bytes, livre_bytes, progresso
+        self.n = self._ultimo = 0
+
+    def write(self, b):
+        self.n += len(b)
+        if self.n > self.limite:
+            raise ValueError(f"O arquivo do Drive passa do limite de {self.limite // 1024 ** 2} MB "
+                             "(DCUBIC_MAX_DRIVE_MB). O download foi interrompido.")
+        if FATOR_DISCO * self.n > self.livre:
+            precisa_mb = max(1, math.ceil(FATOR_DISCO * self.n / 1024 ** 2))
+            raise ValueError(f"Espaço em disco insuficiente no servidor: são necessários cerca de "
+                             f"{precisa_mb} MB livres e há apenas {self.livre // 1024 ** 2} MB. "
+                             "O download foi interrompido.")
+        if self.n - self._ultimo >= 8 * 1024 ** 2:
+            self._ultimo = self.n
+            mb = self.n / 1024 ** 2
+            # ponytail: o gdown não expõe o tamanho total; barra assintótica + MB baixados
+            self.p(0.9 * mb / (mb + 300), f"Baixando… {mb:.0f} MB")
+        return self.f.write(b)
+
+
+def id_do_drive(link: str) -> str:
+    """ID do arquivo em links /file/d/ID/... ou ...?id=ID (aceita também o ID puro)."""
+    import re
+    link = (link or "").strip()
+    m = (re.search(r"/file/d/([\w-]{10,})", link) or re.search(r"[?&]id=([\w-]{10,})", link)
+         or re.fullmatch(r"([\w-]{20,})", link))
+    if not m:
+        raise ValueError("Link do Google Drive não reconhecido. Use o link de compartilhamento "
+                         "(…/file/d/ID/… ou …?id=ID).")
+    return m.group(1)
+
+
+def baixar_do_drive(link: str, limite_mb: int = LIMITE_DRIVE_MB, pasta: str = PASTA_CACHE, progresso=None):
+    """Baixa o arquivo público do Drive direto para disco (gdown, blocos de 512 KB) e o
+    entrega a `receber_baixado`. -> lista (nome, caminho, sha1, bytes), igual a `receber`."""
+    import gdown
+    from gdown.exceptions import FileURLRetrievalError
+    p = progresso or (lambda frac, texto: None)
+    fid = id_do_drive(link)
+    destino_dir = os.path.join(pasta, "drive")
+    os.makedirs(destino_dir, exist_ok=True)
+    livre = shutil.disk_usage(destino_dir).free
+    bruto = os.path.join(destino_dir, f"drive_{fid[:8]}.part")
+    p(0.0, "Baixando…")
+    try:
+        with open(bruto, "wb") as f:
+            gdown.download(f"https://drive.google.com/uc?id={fid}",
+                           _GravadorLimitado(f, limite_mb * 1024 ** 2, livre, p), quiet=True)
+    except Exception as e:
+        _apagar(bruto)
+        if isinstance(e, ValueError):   # limite ou disco (mensagem já pronta)
+            raise
+        if isinstance(e, FileURLRetrievalError):
+            raise ValueError("Não foi possível baixar do Google Drive: o arquivo não está público ou o "
+                             "Drive bloqueou temporariamente o download (excesso de acessos). No Google "
+                             "Drive: Compartilhar > Acesso geral: Qualquer pessoa com o link.") from None
+        raise ValueError(f"Falha ao baixar do Google Drive ({type(e).__name__}). "
+                         "Verifique a conexão e tente novamente.") from None
+    return receber_baixado(bruto, pasta, progresso=p)
+
+
+def receber_baixado(caminho: str, pasta: str = PASTA_CACHE, progresso=None):
+    """Pós-download: valida (.zip pela assinatura PK, .stl pelo cabeçalho binário 84+50n ou
+    'solid' ASCII), extrai/copia para recebidos/ por blocos (via `receber`) e apaga o bruto —
+    SÓ quando ele está na pasta de downloads do app (pasta/drive); arquivo de fora nunca é apagado.
+    -> lista (nome, caminho, sha1, bytes)."""
+    p = progresso or (lambda frac, texto: None)
+    meu = os.path.dirname(os.path.realpath(caminho)) == os.path.realpath(os.path.join(pasta, "drive"))
+    try:
+        with open(caminho, "rb") as f:
+            eh_zip = f.read(4) == b"PK\x03\x04"
+        if eh_zip:
+            with zipfile.ZipFile(caminho) as z:
+                precisa = sum(m.file_size for m in z.infolist() if m.filename.lower().endswith(".stl"))
+            livre = shutil.disk_usage(os.path.dirname(os.path.realpath(caminho))).free
+            if 1.1 * precisa > livre:
+                raise ValueError(f"Espaço em disco insuficiente no servidor: o .zip descompactado tem "
+                                 f"{precisa / 1024 ** 2:.0f} MB e há {livre / 1024 ** 2:.0f} MB livres.")
+        else:
+            try:
+                tipo_stl(caminho)
+            except (ValueError, struct.error):
+                raise ValueError("O arquivo baixado não é um .stl nem um .zip válido (o link pode exigir "
+                                 "login ou apontar para outro tipo de arquivo).") from None
+        if meu:   # receber() escolhe .zip/.stl pelo nome
+            final = os.path.splitext(caminho)[0] + (".zip" if eh_zip else ".stl")
+            os.replace(caminho, final)
+            caminho = final
+        p(0.05, "Extraindo…" if eh_zip else "Recebendo…")
+        with open(caminho, "rb") as f:
+            return receber([f], pasta)
+    finally:
+        if meu:
+            _apagar(caminho)
+
+
+def processar_recebidos(recebidos, pasta: str = PASTA_CACHE, progresso=None):
+    """Pós-recebimento comum ao envio e ao Drive: checagem de memória (D1) + compactação."""
+    checar_memoria(recebidos)
+    return compactar_recebidos(recebidos, pasta, progresso=progresso)
 
 
 # ── 2. Lendo ────────────────────────────────────────────────────────────────────
@@ -392,3 +512,19 @@ if __name__ == "__main__":
     assert r[0]["tri_antes"] == 12 and r[0]["tri_depois"] == 12 and not r[0]["reduzida"], r
     assert tipo_stl(r[0]["caminho"]) == "binario"
     print("stl_compactar OK:", r[0]["tri_antes"], "->", r[0]["tri_depois"], "triângulos")
+    # Drive: ID nos dois formatos; arquivo de fora de pasta/drive não é apagado; HTML é recusado.
+    _fid = "1uqU_6-O9MqrwWzavr74CJU_KQJIJWDV1"
+    assert id_do_drive(f"https://drive.google.com/file/d/{_fid}/view?usp=sharing") == _fid
+    assert id_do_drive(f"https://drive.google.com/open?id={_fid}") == _fid
+    with open(os.path.join(d, "cubo.stl"), "rb") as a, open(os.path.join(d, "fora.stl"), "wb") as b:
+        b.write(a.read())
+    assert receber_baixado(os.path.join(d, "fora.stl"), pasta=d) and os.path.isfile(os.path.join(d, "fora.stl"))
+    os.makedirs(os.path.join(d, "drive"), exist_ok=True)
+    with open(os.path.join(d, "drive", "x.part"), "w") as b:
+        b.write("<!DOCTYPE html><title>Sign in</title>")
+    try:
+        receber_baixado(os.path.join(d, "drive", "x.part"), pasta=d)
+        raise AssertionError("HTML aceito")
+    except ValueError:
+        assert not os.path.exists(os.path.join(d, "drive", "x.part"))
+    print("drive OK")
