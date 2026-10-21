@@ -31,7 +31,7 @@ PASSO_MM = 0.05
 # Troque para "mm" quando a calibração existir.
 UNIDADE = "un."
 LADO_PX = 512
-FECHAR_PX = 3   # fechamento morfológico (px) para contornos abertos de malhas com falhas
+TOL_FECHAR = 0.005   # contornos abertos: fecha lacunas de até ~0,5% da diagonal do bounding box
 
 _RANK_NOME = (("esmalte", 0), ("dentina", 1), ("molar", 1), ("raiz", 1),
               ("polpa", 2), ("canal", 2))
@@ -84,6 +84,31 @@ def _secao(malha: trimesh.Trimesh, eixo: int, pos: float, uv):
     return list(plano.polygons_full), segs, len(plano.dangling) == 0
 
 
+def _par_impar(linhas: np.ndarray) -> np.ndarray:
+    """Máscara booleana (h,w) de contornos já desenhados (True = traço): preenche pela regra
+    par-ímpar. Regiões separadas pelo traço formam um grafo; profundidade ímpar = sólido,
+    par = vazio (câmara/canais dentro da dentina viram furo). Não preenche furos por fechamento."""
+    reg, n = ndimage.label(~linhas)          # regiões livres (4-conectadas)
+    ar = set()
+    for k in (1, 2, 3, 4):                   # regiões vizinhas através de um traço de até k px
+        for a, b in ((reg[:, :-k], reg[:, k:]), (reg[:-k], reg[k:])):
+            m = (a != b) & (a > 0) & (b > 0)
+            ar.update(zip(a[m].tolist(), b[m].tolist()))
+    viz = {i: set() for i in range(1, n + 1)}
+    for a, b in ar:
+        viz[a].add(b); viz[b].add(a)
+    prof = {reg[0, 0]: 0}                    # (0,0) é fundo exterior (há margem)
+    fila = [reg[0, 0]]
+    for r in fila:
+        for v in viz.get(r, ()):
+            if v not in prof:
+                prof[v] = prof[r] + 1; fila.append(v)
+    impar = np.zeros(n + 1, dtype=bool)
+    for r, p in prof.items():
+        impar[r] = p % 2 == 1
+    return impar[reg] | linhas
+
+
 def _barra_nice(mm_visivel: float) -> float:
     alvo = mm_visivel / 4
     for passo in (0.1, 0.2, 0.5, 1, 2, 5, 10, 20, 50):
@@ -131,15 +156,14 @@ def gerar_corte(malhas: dict, cores: dict, nome_eixo: str, pos: float, bbox: np.
                 for furo in p.interiors:
                     d.polygon(px(furo.coords), fill=0)  # furo revela o que está por baixo
         else:
-            # Malha com falhas (STL bruto aberto): contorno com trechos soltos. Desenha os
-            # segmentos, fecha lacunas pequenas e preenche o que ficou cercado.
-            # ponytail: furos internos viram sólidos aqui (a camada de dentro os recobre);
-            # lacunas > ~2*FECHAR_PX ficam só como contorno.
+            # Malha com falhas (STL bruto aberto): desenha os segmentos, une pontas próximas
+            # (fechamento de ~0,5% da diagonal) e preenche pela regra par-ímpar.
+            # ponytail: lacunas maiores que a tolerância ficam abertas (região vaza para o fundo).
             for a, b in segs:
                 d.line(px((a, b)), fill=255, width=2)
-            arr = ndimage.binary_closing(np.asarray(mascara) > 0, iterations=FECHAR_PX)
-            arr = ndimage.binary_fill_holes(arr)
-            mascara = Image.fromarray((arr * 255).astype(np.uint8))
+            tol_px = max(1, int(round(TOL_FECHAR * float(np.linalg.norm(ext)) * px_por_mm / 2)))
+            arr = ndimage.binary_closing(np.asarray(mascara) > 0, iterations=tol_px)
+            mascara = Image.fromarray((_par_impar(arr) * 255).astype(np.uint8))
         img.paste(tuple(cores.get(nome, (200, 200, 200))), mask=mascara)
 
     d = ImageDraw.Draw(img)

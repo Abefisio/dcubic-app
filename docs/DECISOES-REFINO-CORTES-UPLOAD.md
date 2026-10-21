@@ -122,3 +122,9 @@ que a div. Decisões (feitas no worktree `refino/correcao-camera`, a integrar à
   por ~0,5 s) somado à base com o Molar carregado (~505 MB). Isso fica fora do código do app.
 - **Decisão do Dr. Abe: opção 1 — ACEITOU o pico transitório de ~936 MB no envio** (causado por `parse_body_arguments` do Streamlit 1.50, que recebe o arquivo inteiro na RAM por ~0,5 s), medido com `MallocLargeCache=0` (equivalente ao Linux). No macOS padrão a checagem pode recusar o envio por retenção de memória do alocador.
 - Medições: login 467,8 → 200,6 MB; A) Molar 701,8 → 491,5; B) Cortes + plano 696,6 → 514,9; C) envio zip 114 MB 1.528,8 → 936,4 MB.
+
+## Etapa D2 — Cortes sem perder o canal (21/10/2026)
+- Contornos abertos: desenho dos segmentos + fechamento morfológico com tolerância de ~0,5% da diagonal do bounding box (`TOL_FECHAR`, em px = 0,5% × diagonal × px/un ÷ 2 iterações). Não há mais `binary_fill_holes`.
+- Preenchimento par-ímpar (even-odd) em raster (`_par_impar`): regiões separadas pelo traço formam um grafo; profundidade ímpar = sólido, par = vazio. Câmara pulpar/canais vazios ficam como furo.
+- Tentativa vetorial (colar pontas com shapely) descartada: o STL "Molar" gera ~1.800 segmentos fragmentados por corte; o raster foi mais robusto.
+- Limitação: lacunas maiores que a tolerância deixam o contorno aberto (ex.: Molar a 33% da altura, só contorno). Contorno íntegro (malhas fechadas) segue o caminho vetorial exato com furos.
