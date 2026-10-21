@@ -38,8 +38,8 @@ protected          = true
 
 [auth.credentials.usernames."pesquisador@exemplo.com"]
 email              = "pesquisador@exemplo.com"
-name               = "Mary Caroline Skelton Macedo"
-password           = "HASH_BCRYPT_DA_SENHA_DA_MARY"
+name               = "Pesquisadora"
+password           = "HASH_BCRYPT_DA_SENHA_DA_PESQUISADORA"
 role               = "Pesquisador"
 active             = true
 must_change_password = true

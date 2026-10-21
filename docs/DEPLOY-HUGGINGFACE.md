@@ -13,10 +13,10 @@ No painel do Space: **Settings → Repository secrets → New secret**
 - **Valor:** o JSON de uma linha abaixo (com os hashes reais no lugar dos placeholders)
 
 ```json
-{"cookie":{"name":"dcubic_auth","key":"COOKIE_KEY_AQUI","expiry_days":1},"credentials":{"usernames":{"admin@exemplo.com":{"email":"admin@exemplo.com","name":"Dr. Abe","password":"HASH_BCRYPT_DR_ABE","role":"Administrador","active":true,"must_change_password":false,"protected":true},"pesquisador@exemplo.com":{"email":"pesquisador@exemplo.com","name":"Mary Caroline Skelton Macedo","password":"HASH_BCRYPT_MARY","role":"Pesquisador","active":true,"must_change_password":true,"protected":false}}}}
+{"cookie":{"name":"dcubic_auth","key":"COOKIE_KEY_AQUI","expiry_days":1},"credentials":{"usernames":{"admin@exemplo.com":{"email":"admin@exemplo.com","name":"Dr. Abe","password":"HASH_BCRYPT_DR_ABE","role":"Administrador","active":true,"must_change_password":false,"protected":true},"pesquisador@exemplo.com":{"email":"pesquisador@exemplo.com","name":"Pesquisadora","password":"HASH_BCRYPT_PESQUISADORA","role":"Pesquisador","active":true,"must_change_password":true,"protected":false}}}}
 ```
 
-> **Atenção:** substitua `COOKIE_KEY_AQUI`, `HASH_BCRYPT_DR_ABE` e `HASH_BCRYPT_MARY`
+> **Atenção:** substitua `COOKIE_KEY_AQUI`, `HASH_BCRYPT_DR_ABE` e `HASH_BCRYPT_PESQUISADORA`
 > pelos valores reais (nunca commite os valores reais no repositório).
 
 ### Gerar hash bcrypt de uma senha
