@@ -183,19 +183,57 @@ st.markdown(
     "</style>",
     unsafe_allow_html=True,
 )
-authenticator.login(location="main")
 
-_auth_status = st.session_state.get("authentication_status")
+# Limite de tentativas de login: 5 erros seguidos -> pausa de 60 s, POR SESSÃO e nunca permanente
+# (regras de acesso: o dono nunca fica trancado para fora; recarregar a página abre uma sessão nova).
+# O contador da biblioteca (max_login_attempts) é recriado a cada rerun e bloquearia o usuário de vez.
+# ponytail: contador por sessão; quem abre sessões novas a cada tentativa não é contido (só pela
+# espera de ~0,7 s por tentativa da biblioteca). Limite por IP exigiria um proxy na frente do app.
+import time
+_MAX_TENTATIVAS, _PAUSA_S = 5, 60
+_AJUDA_LOGIN = "Esqueceu a senha ou não tem acesso? Fale com o administrador do DCubic."
 
-if _auth_status is not True:
+
+def _cabecalho_login():
     with _dc_login_top:
         _dc_login = _dc_read(os.path.join(_DC_ASSETS, "login.html")).replace("__SRC__", _dc_molar_sources())
         if _dc_login:
             _components.html(_dc_login, height=180, scrolling=False)
+
+
+_espera = int(st.session_state.get("_login_bloqueio_ate", 0) - time.time() + 0.999)
+if _espera > 0 and st.session_state.get("authentication_status") is not True:
+    _cabecalho_login()
+    st.error(f"Muitas tentativas de login incorretas. Aguarde {_espera} s e tente novamente.")
+    st.info("Passado o tempo, clique em \"Tentar novamente\" (ou recarregue a página). " + _AJUDA_LOGIN)
+    st.button("Tentar novamente", key="login_tentar_novamente")
+    st.stop()
+if st.session_state.get("authentication_status") is False:
+    # False só volta se ESTA execução tiver uma tentativa errada (assim cada erro conta uma vez)
+    st.session_state["authentication_status"] = None
+
+authenticator.login(location="main")
+
+_auth_status = st.session_state.get("authentication_status")
+if _auth_status is False:
+    st.session_state["_login_falhas"] = st.session_state.get("_login_falhas", 0) + 1
+    if st.session_state["_login_falhas"] >= _MAX_TENTATIVAS:
+        st.session_state["_login_falhas"] = 0
+        st.session_state["_login_bloqueio_ate"] = time.time() + _PAUSA_S
+        st.rerun()   # mostra a tela de pausa (sem formulário)
+elif _auth_status is True:
+    st.session_state.pop("_login_falhas", None)
+
+if _auth_status is not True:
+    _cabecalho_login()
+    _falhas = st.session_state.get("_login_falhas", 0)
     if st.session_state.get("_idle_logout"):
         st.warning("Sessão encerrada por inatividade (30 min). Faça login novamente.")
-    elif _auth_status is False:
-        st.error("Usuário ou senha incorretos.")
+    elif _falhas:
+        _resta = _MAX_TENTATIVAS - _falhas
+        st.error(f"Usuário ou senha incorretos. {'Resta' if _resta == 1 else 'Restam'} {_resta} "
+                 f"tentativa{'' if _resta == 1 else 's'} antes de uma pausa de {_PAUSA_S} s.")
+    st.caption(_AJUDA_LOGIN)
     st.stop()
 
 # Login bem-sucedido — exibe o app abaixo

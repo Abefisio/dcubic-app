@@ -1,6 +1,7 @@
 # Credenciais e secrets — NUNCA no repositório
-auth/users.yaml
-auth/hf_secret.local.json
+# auth/: tudo ignorado (users.yaml, backups users.yaml.bak-*, chaves locais), exceto modelos *.template
+auth/*
+!auth/*.template
 .env
 *.env
 secrets.toml

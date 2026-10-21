@@ -27,3 +27,10 @@ env -u PYTHONDONTWRITEBYTECODE python3 -m streamlit run app.py --server.headless
 
 - A checagem que só existia no caminho do Drive passou para `receber()` (`_checar_zip`), usada pelo envio direto e pelo Drive: soma descompactada ≤ 2 GB, `1,1 × soma ≤ espaço livre` e, por membro acima de 1 MB, razão de compressão ≤ 100:1 (`RAZAO_MAX_ZIP`). A razão foi acrescentada porque o zip de teste da Fase 1 (51 KB → 52 MB) passaria pelas checagens de soma e de disco; um zip real com 2 STL teve 4,6:1.
 - Em qualquer erro, `receber()` apaga o que aquele envio já gravou em `recebidos/` (e `_gravar` apaga o `.part` incompleto). A correção ficou na função comum, e não em `app.py`, para valer também no Drive.
+
+### Item 3 — Login
+
+- **Limite de tentativas** (contador em `st.session_state`): 5 erros seguidos → pausa de 60 s naquela sessão, sem formulário; a tela diz quantos segundos faltam e oferece "Tentar novamente", recarregar a página e o contato com o administrador. Nunca é permanente e não grava nada em `users.yaml`: recarregar a página abre uma sessão nova, de modo que o dono nunca fica trancado para fora (regras de acesso). Antes da pausa, a mensagem de erro informa quantas tentativas restam; a tela de login mostra sempre a ajuda "Esqueceu a senha ou não tem acesso? Fale com o administrador do DCubic."
+- Limitação conhecida: quem abre uma sessão nova a cada tentativa não é contido pelo contador (só pela espera de ~0,7 s por tentativa da biblioteca); um limite por IP exigiria um proxy na frente do app.
+- `.gitignore`: `auth/*` (inclui `users.yaml` e os backups `users.yaml.bak-*`, que antes só eram ignorados por `.git/info/exclude`, regra local a este clone), com exceção `!auth/*.template` para modelos.
+- E-mails de login reais trocados por `admin@exemplo.com` e `pesquisador@exemplo.com` em `.streamlit/secrets.toml.template`, `docs/DEPLOY-STREAMLIT.md` e `docs/DEPLOY-HUGGINGFACE.md`. Os e-mails antigos continuam no histórico do Git (repositório público); reescrever o histórico não foi feito.

@@ -27,8 +27,8 @@ expiry_days = 0.020833   # 30 minutos
 
 [auth.credentials.usernames]
 
-[auth.credentials.usernames."abedrdador@gmail.com"]
-email              = "abedrdador@gmail.com"
+[auth.credentials.usernames."admin@exemplo.com"]
+email              = "admin@exemplo.com"
 name               = "Dr. Abe"
 password           = "HASH_BCRYPT_DA_SENHA_DO_DR_ABE"
 role               = "Administrador"
@@ -36,8 +36,8 @@ active             = true
 must_change_password = false
 protected          = true
 
-[auth.credentials.usernames."mary@usp.br"]
-email              = "mary@usp.br"
+[auth.credentials.usernames."pesquisador@exemplo.com"]
+email              = "pesquisador@exemplo.com"
 name               = "Mary Caroline Skelton Macedo"
 password           = "HASH_BCRYPT_DA_SENHA_DA_MARY"
 role               = "Pesquisador"
