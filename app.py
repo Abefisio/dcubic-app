@@ -199,6 +199,7 @@ if _auth_status is not True:
     st.stop()
 
 # Login bem-sucedido — exibe o app abaixo
+st.sidebar.markdown("### DCubic Image System Platform")
 authenticator.logout(location="sidebar")
 st.sidebar.caption(f"Logado como: {st.session_state.get('name', '')}")
 
@@ -211,10 +212,6 @@ st.markdown(
     "header[data-testid='stHeader']{height:0;}"
     "[data-testid='stForm']{max-width:30% !important;min-width:320px;margin-left:auto !important;margin-right:auto !important;}"
     "</style>",
-    unsafe_allow_html=True,
-)
-st.markdown(
-    "<h4 style='margin:0;text-align:left'>DCubic Image System Platform</h4>",
     unsafe_allow_html=True,
 )
 
@@ -785,7 +782,6 @@ if _is_stl:
         _plano_3d = (_ax, _pq * _slices.PASSO_MM)
 
     if _aba == "3D":
-        st.subheader("Render 3D — malhas STL")
         if _meshes_dict:
             _meshes_filtrado = {n: m for n, m in _meshes_dict.items() if _visible_dict.get(n, True)}
 
