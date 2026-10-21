@@ -51,3 +51,8 @@ env -u PYTHONDONTWRITEBYTECODE python3 -m streamlit run app.py --server.headless
 - `modules/slices.py`: `trimesh` importado dentro de `para_trimesh`/`carregar_trimesh` (1º corte), não no login. `modules/viewer3d.py`: `skimage.measure.marching_cubes` importado dentro de `build_mesh` (só o modo volume usa).
 - `requirements.txt` **sem alteração**: todos os pacotes têm import em algum `.py` do repositório (inclusive pydicom/tifffile/nibabel no `loader.py`), exceto `shapely` e `networkx`, que são usados pelo trimesh (cortes) e pelo scikit-image — mantidos.
 - Servidor local iniciado sem `PYTHONDONTWRITEBYTECODE` (comando no item 1), para reaproveitar os `.pyc`.
+
+### Item 9 — Menos execuções por clique
+
+- Botões de olho (estruturas visíveis) e "Limpar STL" usam `on_click` em vez de `st.rerun()`: 1 execução do script por clique (antes, 2). Os demais `st.rerun()` (envio em duas etapas, dentes de exemplo, pausa do login, referências do modo volume) foram mantidos: fazem E/S de arquivos ou dependem da ordem de desenho.
+- `slices.bbox_combinado` em `st.cache_data` (`_bbox_cached`, chave = arquivos+mtime e nomes): deixa de custar 45–60 ms a cada rerun.

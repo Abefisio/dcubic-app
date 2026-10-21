@@ -316,6 +316,12 @@ def _trimesh_cached(caminho, mtime, n_faces_original, _malha_pv):
     return _slices.carregar_trimesh(caminho, n_faces_original, _malha_pv)
 
 
+@st.cache_data(show_spinner=False, max_entries=8)
+def _bbox_cached(chave_arquivos, nomes, _malhas):
+    """Caixa envolvente das malhas (59–117 ms por execução sem cache). Chave: arquivos+mtime e nomes."""
+    return _slices.bbox_combinado(_malhas)
+
+
 @st.cache_data(show_spinner=False, max_entries=64)
 def _corte_cached(chave_arquivos, visiveis, nome_eixo, pos_q, _malhas, _cores, _bbox):
     """PNG do corte. Chave: arquivos+mtime, estruturas visíveis, eixo e posição
@@ -368,7 +374,7 @@ else:
     _load_folder_btn = False
 
 # Opções da aba Cortes: reatribuídas ANTES dos botões que chamam st.rerun() (troca de
-# dente, Limpar STL); senão o Streamlit descarta o estado do widget não desenhado.
+# dente) e do "Limpar STL" (que deixa o modo STL sem dente); senão o Streamlit descarta o estado do widget não desenhado.
 for _k, _padrao in (("cortes_plano", False), ("cortes_plano_eixo", "Axial (Z)")):
     st.session_state[_k] = st.session_state.get(_k, _padrao)
 
@@ -661,11 +667,12 @@ if _load_folder_btn:
             st.session_state["stl_paths"] = _found
             st.session_state.pop("_stl_selected", None)
 
-if st.sidebar.button("Limpar STL", key="stl_clear"):
-    st.session_state.pop("_upl_msg", None)
-    st.session_state.pop("stl_paths", None)
-    st.session_state.pop("_stl_selected", None)
-    st.rerun()
+def _limpar_stl():
+    for _k in ("_upl_msg", "stl_paths", "_stl_selected"):
+        st.session_state.pop(_k, None)
+
+
+st.sidebar.button("Limpar STL", key="stl_clear", on_click=_limpar_stl)  # on_click: sem st.rerun
 
 # Seletor de estruturas — unifica uploads e pasta na mesma lista
 _stl_path_mtime_dedup = []
@@ -813,12 +820,12 @@ if _is_stl:
         if _vkey not in st.session_state:
             st.session_state[_vkey] = True
         _vis = st.session_state[_vkey]
-        if st.sidebar.button(
+        # on_click: o estado muda ANTES da execução do script (1 execução por clique, sem st.rerun)
+        st.sidebar.button(
             f"{'👁️' if _vis else '🚫'}  {_nome}",
             key=f"btn_visivel_{_nome}",
-        ):
-            st.session_state[_vkey] = not _vis
-            st.rerun()
+            on_click=lambda _k=_vkey: st.session_state.update({_k: not st.session_state.get(_k, True)}),
+        )
     _visible_dict = {
         _mi["name"]: st.session_state.get(f"visivel_{_mi['name']}", True)
         for _mi in _stl_ok
@@ -839,7 +846,7 @@ if _is_stl:
             _tm[_mi["name"]] = _trimesh_cached(_pp, _mt, _mi["n_faces"], _mi["mesh"])
     _vis_tm = tuple(n for n in _tm if _visible_dict.get(n, True))
     if _vis_tm:
-        _bb = _slices.bbox_combinado(_tm)
+        _bb = _bbox_cached(tuple(_stl_path_mtime_dedup), tuple(_tm), _tm)
         _ext_max = float(max(_bb[1] - _bb[0]))
         _passo = _slices.PASSO_MM if _ext_max < 50 else 1.0
         _chave_arq = tuple(_stl_path_mtime_dedup)
