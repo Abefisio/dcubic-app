@@ -361,9 +361,11 @@ def _limite_envio_mb():
     return 200 if _no_cloud else 2048
 
 
-_LIMITE_ENVIO_MB = _limite_envio_mb()
 from streamlit import config as _st_config
-if _LIMITE_ENVIO_MB < _st_config.get_option("server.maxUploadSize"):
+_TETO_SERVIDOR_MB = _st_config.get_option("server.maxUploadSize")  # config.toml (200) ou --server.maxUploadSize
+# O servidor recusa acima do próprio teto; a legenda não pode prometer mais do que ele aceita.
+_LIMITE_ENVIO_MB = min(_limite_envio_mb(), _TETO_SERVIDOR_MB)
+if _LIMITE_ENVIO_MB < _TETO_SERVIDOR_MB:
     # O seletor de arquivos lê esta opção a cada exibição e recusa no navegador, antes de
     # enviar: o servidor (Cloud, 1 GB de RAM) nem chega a receber o arquivo grande.
     _st_config.set_option("server.maxUploadSize", _LIMITE_ENVIO_MB)

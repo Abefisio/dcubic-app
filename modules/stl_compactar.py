@@ -42,7 +42,7 @@ TRABALHO_MB = 150
 # ponytail: estimativa fixa da malha REDUZIDA já aberta no app (3D + Cortes), por triângulo;
 # medida no teste de 21/10/2026 (ver docs/DECISOES-REFINO-CORTES-UPLOAD.md). Recalibre se o 3D mudar.
 BYTES_APP_POR_TRIANGULO = 400
-LIMITE_LOCAL_MB = 2048   # mesmo valor de server.maxUploadSize em .streamlit/config.toml
+LIMITE_LOCAL_MB = 2048   # teto local: servidor iniciado com --server.maxUploadSize 2048 (docs/DECISOES.md)
 LIMITE_SEGURO_MB = int(os.environ.get("DCUBIC_LIMITE_MEMORIA_MB", "800"))
 LIMITE_MEMBRO_ZIP = 2 * 1024 ** 3   # recusa membros de zip acima de 2 GB descompactados
 PASTA_CACHE = os.path.join(tempfile.gettempdir(), "dcubic_upload_cache")
