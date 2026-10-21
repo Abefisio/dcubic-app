@@ -193,3 +193,18 @@ não informa o nome original quando grava num objeto-arquivo); estruturas de .zi
 **Testes (21/10/2026, macOS):** link real MOLAR-SUP (zip, 2 estruturas): 7,4 s, 1.603.244 → 395.896
 triângulos (canal 311.303, sem redução), pico 283 MB. Pós-download com molar_sup__raiz_voi_.stl
 (779,7 MB): 15.593.864 → 520.595 triângulos, 7,0 s, pico 293 MB; original do Desktop preservado.
+
+## Visibilidade do repositório (21/10/2026)
+
+**Decisão:** manter o repositório `Abefisio/dcubic-app` **público**.
+
+**Motivos:**
+- O plano gratuito do Streamlit Community Cloud permite apenas **1 app privado**; produção e demo
+  são dois apps.
+- Produção (`main`) e demo (`dcubic-image-system.streamlit.app`, branch `teste/frenteB-corte`)
+  usam o **mesmo repositório**; tornar o repositório privado afetaria os dois.
+- **Nenhuma senha no histórico:** as credenciais ficam em Secrets do Cloud / arquivos locais
+  ignorados pelo Git.
+
+**Condição para manter a decisão:** nenhuma senha, token ou dado de paciente pode entrar em commit.
+Rever esta decisão se o plano do Cloud mudar ou se o app passar a usar dados sensíveis no repositório.
