@@ -44,19 +44,26 @@ stx.CookieManager = _patched_cookie_manager
 
 import streamlit_authenticator as stauth
 
-from modules.loader import load_volume
-from modules.viewer2d import render_triplanar, make_overlay_fig
-from modules.segmentation import segment_volume, TISSUE_PALETTE, DEFAULT_THRESHOLDS
-from modules.viewer3d import build_all_meshes, create_plotly_3d, limpar_figura_3d
-from modules.metrics import (
-    compute_volumes, compute_surface_areas, compute_distance,
-    mesh_to_stl_bytes, mesh_to_obj_bytes,
-)
-from modules.report import generate_pdf
-from modules.anatomy import compute_anatomy
-from modules import references
+from modules.viewer3d import create_plotly_3d, limpar_figura_3d
+# Módulos do modo volume (reportlab, pydicom/tifffile/nibabel, scipy/skimage da anatomia...):
+# importados só quando o modo volume abre — ver "MODO VOLUME" mais abaixo.
 from modules.mesh_loader import load_meshes
 from modules import slices as _slices
+
+
+
+@st.cache_resource(show_spinner=False)
+def _limpar_cache_na_partida():
+    """1x por processo do servidor: apaga do cache de envios (/tmp/dcubic_upload_cache) o que tem
+    mais de 2 dias. Falha na limpeza nunca impede o app de abrir."""
+    try:
+        from modules import stl_compactar as _c
+        return len(_c.limpar_cache_antigo(dias=2))
+    except Exception:
+        return 0
+
+
+_limpar_cache_na_partida()
 
 _MAX_VOXELS = 12_000_000  # ponytail: ajuste conforme RAM disponível (Streamlit Cloud ~1 GB)
 
@@ -183,19 +190,57 @@ st.markdown(
     "</style>",
     unsafe_allow_html=True,
 )
-authenticator.login(location="main")
 
-_auth_status = st.session_state.get("authentication_status")
+# Limite de tentativas de login: 5 erros seguidos -> pausa de 60 s, POR SESSÃO e nunca permanente
+# (regras de acesso: o dono nunca fica trancado para fora; recarregar a página abre uma sessão nova).
+# O contador da biblioteca (max_login_attempts) é recriado a cada rerun e bloquearia o usuário de vez.
+# ponytail: contador por sessão; quem abre sessões novas a cada tentativa não é contido (só pela
+# espera de ~0,7 s por tentativa da biblioteca). Limite por IP exigiria um proxy na frente do app.
+import time
+_MAX_TENTATIVAS, _PAUSA_S = 5, 60
+_AJUDA_LOGIN = "Esqueceu a senha ou não tem acesso? Fale com o administrador do DCubic."
 
-if _auth_status is not True:
+
+def _cabecalho_login():
     with _dc_login_top:
         _dc_login = _dc_read(os.path.join(_DC_ASSETS, "login.html")).replace("__SRC__", _dc_molar_sources())
         if _dc_login:
             _components.html(_dc_login, height=180, scrolling=False)
+
+
+_espera = int(st.session_state.get("_login_bloqueio_ate", 0) - time.time() + 0.999)
+if _espera > 0 and st.session_state.get("authentication_status") is not True:
+    _cabecalho_login()
+    st.error(f"Muitas tentativas de login incorretas. Aguarde {_espera} s e tente novamente.")
+    st.info("Passado o tempo, clique em \"Tentar novamente\" (ou recarregue a página). " + _AJUDA_LOGIN)
+    st.button("Tentar novamente", key="login_tentar_novamente")
+    st.stop()
+if st.session_state.get("authentication_status") is False:
+    # False só volta se ESTA execução tiver uma tentativa errada (assim cada erro conta uma vez)
+    st.session_state["authentication_status"] = None
+
+authenticator.login(location="main")
+
+_auth_status = st.session_state.get("authentication_status")
+if _auth_status is False:
+    st.session_state["_login_falhas"] = st.session_state.get("_login_falhas", 0) + 1
+    if st.session_state["_login_falhas"] >= _MAX_TENTATIVAS:
+        st.session_state["_login_falhas"] = 0
+        st.session_state["_login_bloqueio_ate"] = time.time() + _PAUSA_S
+        st.rerun()   # mostra a tela de pausa (sem formulário)
+elif _auth_status is True:
+    st.session_state.pop("_login_falhas", None)
+
+if _auth_status is not True:
+    _cabecalho_login()
+    _falhas = st.session_state.get("_login_falhas", 0)
     if st.session_state.get("_idle_logout"):
         st.warning("Sessão encerrada por inatividade (30 min). Faça login novamente.")
-    elif _auth_status is False:
-        st.error("Usuário ou senha incorretos.")
+    elif _falhas:
+        _resta = _MAX_TENTATIVAS - _falhas
+        st.error(f"Usuário ou senha incorretos. {'Resta' if _resta == 1 else 'Restam'} {_resta} "
+                 f"tentativa{'' if _resta == 1 else 's'} antes de uma pausa de {_PAUSA_S} s.")
+    st.caption(_AJUDA_LOGIN)
     st.stop()
 
 # Login bem-sucedido — exibe o app abaixo
@@ -271,6 +316,12 @@ def _trimesh_cached(caminho, mtime, n_faces_original, _malha_pv):
     return _slices.carregar_trimesh(caminho, n_faces_original, _malha_pv)
 
 
+@st.cache_data(show_spinner=False, max_entries=8)
+def _bbox_cached(chave_arquivos, nomes, _malhas):
+    """Caixa envolvente das malhas (59–117 ms por execução sem cache). Chave: arquivos+mtime e nomes."""
+    return _slices.bbox_combinado(_malhas)
+
+
 @st.cache_data(show_spinner=False, max_entries=64)
 def _corte_cached(chave_arquivos, visiveis, nome_eixo, pos_q, _malhas, _cores, _bbox):
     """PNG do corte. Chave: arquivos+mtime, estruturas visíveis, eixo e posição
@@ -323,7 +374,7 @@ else:
     _load_folder_btn = False
 
 # Opções da aba Cortes: reatribuídas ANTES dos botões que chamam st.rerun() (troca de
-# dente, Limpar STL); senão o Streamlit descarta o estado do widget não desenhado.
+# dente) e do "Limpar STL" (que deixa o modo STL sem dente); senão o Streamlit descarta o estado do widget não desenhado.
 for _k, _padrao in (("cortes_plano", False), ("cortes_plano_eixo", "Axial (Z)")):
     st.session_state[_k] = st.session_state.get(_k, _padrao)
 
@@ -333,7 +384,6 @@ def _trocar_dente(_paths):
     st.session_state["stl_paths"] = list(_paths)
     st.session_state.pop("_upl_msg", None)
     st.session_state.pop("_stl_selected", None)
-    st.session_state.pop("_stl_last", None)
 
 
 # ---------------------------------------------------------------------------
@@ -341,24 +391,31 @@ def _trocar_dente(_paths):
 # disco por blocos e compactado automaticamente (modules/stl_compactar.py); o resultado
 # entra em stl_paths e segue o mesmo fluxo do 3D e dos Cortes.
 # ---------------------------------------------------------------------------
+def _segredo(nome):
+    """Valor de configuração: st.secrets tem prioridade; depois a variável de ambiente."""
+    try:
+        _v = st.secrets.get(nome)
+    except Exception:  # sem secrets.toml
+        _v = None
+    return _v or os.environ.get(nome)
+
+
 def _limite_envio_mb():
     """Limite efetivo do envio em MB: DCUBIC_MAX_UPLOAD_MB (st.secrets ou ambiente) tem
     prioridade; sem ele, 200 no Streamlit Community Cloud (detectado por /mount/src ou
     HOSTNAME com "streamlit") e 2048 no Mac/servidor USP."""
-    try:
-        _v = st.secrets.get("DCUBIC_MAX_UPLOAD_MB")
-    except Exception:  # sem secrets.toml
-        _v = None
-    _v = _v or os.environ.get("DCUBIC_MAX_UPLOAD_MB")
+    _v = _segredo("DCUBIC_MAX_UPLOAD_MB")
     if _v:
         return int(_v)
     _no_cloud = os.path.isdir("/mount/src") or "streamlit" in os.environ.get("HOSTNAME", "").lower()
     return 200 if _no_cloud else 2048
 
 
-_LIMITE_ENVIO_MB = _limite_envio_mb()
 from streamlit import config as _st_config
-if _LIMITE_ENVIO_MB < _st_config.get_option("server.maxUploadSize"):
+_TETO_SERVIDOR_MB = _st_config.get_option("server.maxUploadSize")  # config.toml (200) ou --server.maxUploadSize
+# O servidor recusa acima do próprio teto; a legenda não pode prometer mais do que ele aceita.
+_LIMITE_ENVIO_MB = min(_limite_envio_mb(), _TETO_SERVIDOR_MB)
+if _LIMITE_ENVIO_MB < _TETO_SERVIDOR_MB:
     # O seletor de arquivos lê esta opção a cada exibição e recusa no navegador, antes de
     # enviar: o servidor (Cloud, 1 GB de RAM) nem chega a receber o arquivo grande.
     _st_config.set_option("server.maxUploadSize", _LIMITE_ENVIO_MB)
@@ -378,6 +435,26 @@ if _LIMITE_ENVIO_MB < 2048:
 else:
     st.sidebar.caption(f"Limite de {_LIMITE_ENVIO_MB} MB por envio. Malhas acima de 500.000 "
                        "triângulos são reduzidas automaticamente para visualização.")
+# Arquivo grande pelo link do Google Drive: baixado direto para o disco do servidor (não passa
+# pelo navegador nem pelo limite do seletor) e entregue ao MESMO pós-recebimento do envio.
+_LIMITE_DRIVE_MB = int(_segredo("DCUBIC_MAX_DRIVE_MB") or 2048)
+_link_drive = st.sidebar.text_input("Arquivo grande? Cole o link do Google Drive (.stl ou .zip)",
+                                    key="drive_link")
+st.sidebar.caption("No Google Drive: clique direito no arquivo > Compartilhar > Acesso geral: "
+                   "Qualquer pessoa com o link > Copiar link.")
+if st.sidebar.button("Importar do Drive", key="drive_importar") and _link_drive.strip():
+    from modules import stl_compactar as _cmp
+    _barra_drive = st.sidebar.progress(0.0, text="Baixando…")
+    try:
+        st.session_state["_upl_recebidos"] = _cmp.baixar_do_drive(
+            _link_drive, _LIMITE_DRIVE_MB,
+            progresso=lambda f, t: _barra_drive.progress(min(float(f), 1.0), text=t))
+        if not st.session_state["_upl_recebidos"]:
+            st.session_state.pop("_upl_recebidos")
+            raise ValueError("Nenhum arquivo .stl encontrado no arquivo do Drive.")
+    except Exception as _de:
+        st.session_state["_upl_msg"] = ("erro", str(_de))
+    _barra_drive.empty()  # a etapa 2 (abaixo) mostra Reduzindo… / Pronto
 # Envio em duas etapas, para não manter na RAM o arquivo enviado e a compactação ao mesmo tempo:
 #  1) grava os arquivos em disco (por blocos) e troca a chave do uploader -> no rerun o
 #     Streamlit descarta os bytes do envio;
@@ -418,8 +495,8 @@ if "_upl_recebidos" in st.session_state:
     try:
         # Libera o dente anterior antes de compactar (pico de memória menor)
         _load_stl_from_paths.clear(); _trimesh_cached.clear(); _interior_cached.clear()
-        _cmp.checar_memoria(_recebidos)  # etapa 2: malhas REDUZIDAS + RSS (exceto macOS), bytes já liberados
-        _res = _cmp.compactar_recebidos(
+        # etapa 2 (envio e Drive): checagem de memória D1 (malhas REDUZIDAS + RSS, exceto macOS) + compactação
+        _res = _cmp.processar_recebidos(
             _recebidos, progresso=lambda f, t: _barra.progress(min(float(f), 1.0), text=t))
         _trocar_dente([_r["caminho"] for _r in _res])
         st.session_state["_upl_msg"] = ("ok", _res)
@@ -590,12 +667,12 @@ if _load_folder_btn:
             st.session_state["stl_paths"] = _found
             st.session_state.pop("_stl_selected", None)
 
-if st.sidebar.button("Limpar STL", key="stl_clear"):
-    st.session_state.pop("_upl_msg", None)
-    st.session_state.pop("stl_paths", None)
-    st.session_state.pop("_stl_selected", None)
-    st.session_state.pop("_stl_last", None)
-    st.rerun()
+def _limpar_stl():
+    for _k in ("_upl_msg", "stl_paths", "_stl_selected"):
+        st.session_state.pop(_k, None)
+
+
+st.sidebar.button("Limpar STL", key="stl_clear", on_click=_limpar_stl)  # on_click: sem st.rerun
 
 # Seletor de estruturas — unifica uploads e pasta na mesma lista
 _stl_path_mtime_dedup = []
@@ -609,10 +686,8 @@ if _opcoes:
         format_func=lambda p: os.path.splitext(os.path.basename(p))[0],
         key="_stl_selected",
     )
-    _sel_tuple = tuple(sorted(_sel_paths))
-    if _sel_tuple != st.session_state.get("_stl_last"):
-        _load_stl_from_paths.clear()
-        st.session_state["_stl_last"] = _sel_tuple
+    # Trocar de dente/seleção não esvazia o cache: max_entries=2 já limita a 2 dentes na RAM
+    # e voltar a um dente recente não relê do disco.
     _stl_path_mtime_dedup = [
         (_p, os.path.getmtime(_p)) for _p in _sel_paths if _p and os.path.isfile(_p)
     ]
@@ -745,12 +820,12 @@ if _is_stl:
         if _vkey not in st.session_state:
             st.session_state[_vkey] = True
         _vis = st.session_state[_vkey]
-        if st.sidebar.button(
+        # on_click: o estado muda ANTES da execução do script (1 execução por clique, sem st.rerun)
+        st.sidebar.button(
             f"{'👁️' if _vis else '🚫'}  {_nome}",
             key=f"btn_visivel_{_nome}",
-        ):
-            st.session_state[_vkey] = not _vis
-            st.rerun()
+            on_click=lambda _k=_vkey: st.session_state.update({_k: not st.session_state.get(_k, True)}),
+        )
     _visible_dict = {
         _mi["name"]: st.session_state.get(f"visivel_{_mi['name']}", True)
         for _mi in _stl_ok
@@ -771,7 +846,7 @@ if _is_stl:
             _tm[_mi["name"]] = _trimesh_cached(_pp, _mt, _mi["n_faces"], _mi["mesh"])
     _vis_tm = tuple(n for n in _tm if _visible_dict.get(n, True))
     if _vis_tm:
-        _bb = _slices.bbox_combinado(_tm)
+        _bb = _bbox_cached(tuple(_stl_path_mtime_dedup), tuple(_tm), _tm)
         _ext_max = float(max(_bb[1] - _bb[0]))
         _passo = _slices.PASSO_MM if _ext_max < 50 else 1.0
         _chave_arq = tuple(_stl_path_mtime_dedup)
@@ -1043,6 +1118,21 @@ if not st.session_state.get("modo_volume"):
     st.button("Abrir modo volume (dados sintéticos)", key="abrir_modo_volume",
               on_click=lambda: st.session_state.update(modo_volume=True))
     st.stop()
+
+# Imports tardios do modo volume: o login e o modo STL não pagam por eles. As funções em cache
+# definidas no topo (_load_synthetic_vol, _build_meshes_cached, ...) usam estes nomes globais
+# só quando chamadas, sempre depois desta linha.
+from modules.loader import load_volume
+from modules.viewer2d import render_triplanar, make_overlay_fig
+from modules.segmentation import segment_volume, TISSUE_PALETTE, DEFAULT_THRESHOLDS
+from modules.viewer3d import build_all_meshes
+from modules.metrics import (
+    compute_volumes, compute_surface_areas, compute_distance,
+    mesh_to_stl_bytes, mesh_to_obj_bytes,
+)
+from modules.report import generate_pdf
+from modules.anatomy import compute_anatomy
+from modules import references
 
 vol_data = _load_synthetic_vol()
 

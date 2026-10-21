@@ -5,5 +5,7 @@ textColor = "#e6edf6"
 font = "sans serif"
 
 [server]
-maxUploadSize = 2048
+# 200 MB = limite do Streamlit Cloud (~1 GB de RAM). No Mac, para arquivos grandes, inicie com
+# --server.maxUploadSize 2048 (ver docs/DECISOES.md, "Comando local").
+maxUploadSize = 200
 headless = true

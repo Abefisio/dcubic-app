@@ -15,7 +15,6 @@ import os
 os.environ.setdefault("PYVISTA_OFF_SCREEN", "true")
 import numpy as np
 import plotly.graph_objects as go
-from skimage.measure import marching_cubes
 
 
 def build_mesh(
@@ -39,6 +38,7 @@ def build_mesh(
         return None
 
     import pyvista as pv
+    from skimage.measure import marching_cubes   # só o modo volume usa (import tardio)
     verts, faces, normals, _ = marching_cubes(
         mask, level=0.5, spacing=spacing, step_size=step_size
     )

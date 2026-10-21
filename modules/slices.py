@@ -15,7 +15,6 @@ import io
 import time
 
 import numpy as np
-import trimesh
 from PIL import Image, ImageDraw, ImageFont
 from scipy import ndimage
 
@@ -39,6 +38,7 @@ _RANK_NOME = (("esmalte", 0), ("dentina", 1), ("molar", 1), ("raiz", 1),
 
 def para_trimesh(pontos: np.ndarray, faces: np.ndarray) -> trimesh.Trimesh:
     """Pontos/faces (colunas c0,c1,c2) -> Trimesh em coordenadas do Plotly (x,y,z)."""
+    import trimesh   # import tardio (~1 s): só quando o 1º corte é preparado, não no login
     v = np.asarray(pontos, dtype=np.float64)[:, [2, 1, 0]]
     f = np.asarray(faces)[:, ::-1]  # a troca de eixos é uma reflexão: inverte o enrolamento
     return trimesh.Trimesh(vertices=v, faces=f, process=False)
@@ -48,6 +48,7 @@ def carregar_trimesh(caminho: str, n_faces_original: int, malha_pv) -> trimesh.T
     """Malha trimesh de um STL. Acima de LIMITE_FACES usa a malha já decimada do app
     (mesh_loader). ponytail: o Bloco 3 (compactação) substituirá esse recurso."""
     if n_faces_original <= LIMITE_FACES:
+        import trimesh
         m = trimesh.load(caminho, file_type="stl", process=False)
         # STL do trimesh já vem como (x, y, z) do arquivo = (c0, c1, c2) do pyvista
         return para_trimesh(m.vertices, m.faces)

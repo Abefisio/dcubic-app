@@ -149,3 +149,62 @@ que a div. Decisões (feitas no worktree `refino/correcao-camera`, a integrar à
 - **Testes (cache de disco novo e vazio a cada arquivo, mesmas funções do envio):** raiz do MOLAR-SUP (780 MB): 15.593.864 → 520.595 triângulos, 7,0 s, pico 298 MB, desvio máximo da caixa envolvente 2,13 un. (célula 5,33). Esmalte PRE-MOLAR-SUP (259 MB): 5.177.234 → 512.697, 5,3 s, pico 300 MB, desvio 1,16 un. (célula 3,00). O desvio vem das médias por célula (sempre menor que 1 célula); a grade comum mantém o alinhamento entre estruturas.
 - **Alerta (não resolvido, fora do app):** o Streamlit 1.50 recebe o envio inteiro na RAM (`parse_body_arguments`, ~4 cópias por ~0,5 s) antes do código do app rodar. Com 2048 MB, um envio de ~2 GB pode gerar pico transitório estimado de ~8 GB só no Streamlit; ~780 MB → ~3 GB. No Mac de 16 GB cabe, mas com folga pequena para 2 GB; envio em `.zip` reduz esse pico na proporção da compressão.
 - **Teste real pelo navegador:** Teste real pelo navegador com molar_sup__raiz_voi_.stl (780 MB, sem zip): pico de 2,9 GB por ~20 s na recepção do arquivo pelo próprio Streamlit (antes do processamento do app); após a redução, ~1 GB residual. Aceito para uso local (Mac 16 GB). Recomendação ao usuário: enviar arquivos grandes em .zip. Pendente antes do uso multiusuário no servidor USP: liberar o arquivo do file_uploader após gravar em disco e reduzir o pico. No Streamlit Cloud, definir DCUBIC_MAX_UPLOAD_MB = 200 no painel Secrets antes de levar esta branch à produção.
+
+## Importação por link do Google Drive (21/10/2026)
+
+**Motivo:** o Streamlit Cloud limita o envio a 200 MB (DCUBIC_MAX_UPLOAD_MB). Pelo link do Drive o
+arquivo é baixado direto para o disco do servidor, sem passar pelo navegador nem pelo seletor.
+
+**Interface (barra lateral, logo abaixo de "Enviar STL"):** campo "Arquivo grande? Cole o link do
+Google Drive (.stl ou .zip)", ajuda com o passo a passo de compartilhamento e botão "Importar do Drive".
+
+**Fluxo (modules/stl_compactar.py):**
+1. `id_do_drive` — extrai o ID de `/file/d/ID/` ou `?id=ID` (aceita o ID puro).
+2. `baixar_do_drive` — gdown 5.2.2 (já no requirements) grava a resposta em streaming, em blocos de
+   512 KB, num objeto `_GravadorLimitado` que escreve em `<cache>/drive/drive_<id>.part`; nada inteiro na RAM.
+3. `receber_baixado` — valida o conteúdo (zip pela assinatura `PK\x03\x04`; STL binário 84+50n ou ASCII
+   "solid"; página HTML de login/erro é recusada), extrai o .zip membro a membro / copia o .stl para
+   `recebidos/` com a função `receber` já existente e apaga o bruto.
+4. `processar_recebidos` — pós-recebimento ÚNICO do envio e do Drive: `checar_memoria` (D1: no Linux,
+   RSS + estimativa ≤ DCUBIC_LIMITE_MEMORIA_MB) + `compactar_recebidos` (~500 mil triângulos, grade
+   comum, cache por SHA-1). No app, o Drive alimenta o mesmo `_upl_recebidos` da etapa 2 do envio e o
+   dente novo substitui o anterior por `_trocar_dente`.
+
+**Limites e mensagens:**
+- `DCUBIC_MAX_DRIVE_MB` (secrets → ambiente; padrão 2048). O gdown não expõe o Content-Length, então o
+  tamanho é conferido DURANTE o download: ao passar do limite, o download é interrompido e o parcial apagado.
+- Disco: `shutil.disk_usage` na pasta do cache antes do download; o download é interrompido se
+  2,5 × bytes baixados > espaço livre inicial (1× download + 1× cópia/extração + 0,5× folga para a
+  saída reduzida e a conversão ASCII→binário). Para .zip, antes de extrair: 1,1 × soma descompactada ≤ livre.
+- Link não público (ou cota do Drive excedida): `FileURLRetrievalError` do gdown vira mensagem em português
+  com o caminho "Compartilhar > Acesso geral: Qualquer pessoa com o link".
+
+**Temporários:** o bruto baixado é apagado logo após a extração/cópia; os extraídos em `recebidos/` são
+apagados por `compactar_recebidos` (ou pelo tratamento de erro do app). Fica só o cache reduzido.
+`receber_baixado` só apaga arquivos da própria pasta `<cache>/drive` — um arquivo de fora (ex.: Desktop)
+nunca é apagado.
+
+**Barra de progresso:** Baixando… N MB (barra assintótica, tamanho total desconhecido) → Extraindo/Recebendo
+→ Lendo/Reduzindo (etapa 2) → Pronto.
+
+**Limitação conhecida:** um .stl único baixado do Drive recebe o nome `drive_<8 primeiros do ID>` (o gdown
+não informa o nome original quando grava num objeto-arquivo); estruturas de .zip mantêm os nomes dos membros.
+
+**Testes (21/10/2026, macOS):** link real MOLAR-SUP (zip, 2 estruturas): 7,4 s, 1.603.244 → 395.896
+triângulos (canal 311.303, sem redução), pico 283 MB. Pós-download com molar_sup__raiz_voi_.stl
+(779,7 MB): 15.593.864 → 520.595 triângulos, 7,0 s, pico 293 MB; original do Desktop preservado.
+
+## Visibilidade do repositório (21/10/2026)
+
+**Decisão:** manter o repositório `Abefisio/dcubic-app` **público**.
+
+**Motivos:**
+- O plano gratuito do Streamlit Community Cloud permite apenas **1 app privado**; produção e demo
+  são dois apps.
+- Produção (`main`) e demo (`dcubic-image-system.streamlit.app`, branch `teste/frenteB-corte`)
+  usam o **mesmo repositório**; tornar o repositório privado afetaria os dois.
+- **Nenhuma senha no histórico:** as credenciais ficam em Secrets do Cloud / arquivos locais
+  ignorados pelo Git.
+
+**Condição para manter a decisão:** nenhuma senha, token ou dado de paciente pode entrar em commit.
+Rever esta decisão se o plano do Cloud mudar ou se o app passar a usar dados sensíveis no repositório.

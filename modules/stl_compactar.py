@@ -21,11 +21,13 @@ from __future__ import annotations
 import gc
 import hashlib
 import json
+import math
 import os
 import shutil
 import struct
 import sys
 import tempfile
+import time
 import zipfile
 
 import numpy as np
@@ -41,9 +43,11 @@ TRABALHO_MB = 150
 # ponytail: estimativa fixa da malha REDUZIDA já aberta no app (3D + Cortes), por triângulo;
 # medida no teste de 21/10/2026 (ver docs/DECISOES-REFINO-CORTES-UPLOAD.md). Recalibre se o 3D mudar.
 BYTES_APP_POR_TRIANGULO = 400
-LIMITE_LOCAL_MB = 2048   # mesmo valor de server.maxUploadSize em .streamlit/config.toml
+LIMITE_LOCAL_MB = 2048   # teto local: servidor iniciado com --server.maxUploadSize 2048 (docs/DECISOES.md)
 LIMITE_SEGURO_MB = int(os.environ.get("DCUBIC_LIMITE_MEMORIA_MB", "800"))
-LIMITE_MEMBRO_ZIP = 2 * 1024 ** 3   # recusa membros de zip acima de 2 GB descompactados
+LIMITE_MEMBRO_ZIP = 2 * 1024 ** 3   # recusa zip acima de 2 GB descompactados (por membro e na soma)
+# STL real comprime ~3–10:1 (zip de teste com 2 STL: 4,6:1); 1000:1 é "zip-bomba" (Fase 1: 51 KB -> 52 MB).
+RAZAO_MAX_ZIP = 100
 PASTA_CACHE = os.path.join(tempfile.gettempdir(), "dcubic_upload_cache")
 _K_GRADE = 2.4   # triângulos ≈ _K_GRADE * área / célula² (agrupamento de vértices; calibrável)
 
@@ -130,35 +134,213 @@ def _gravar(origem, pasta: str):
     os.makedirs(destino_dir, exist_ok=True)
     h = hashlib.sha1()
     fd, tmp = tempfile.mkstemp(dir=destino_dir, suffix=".part")
-    with os.fdopen(fd, "wb") as f:
-        shutil.copyfileobj(origem, _GravadorComHash(f, h), 1024 * 1024)
+    try:
+        with os.fdopen(fd, "wb") as f:
+            shutil.copyfileobj(origem, _GravadorComHash(f, h), 1024 * 1024)
+    except BaseException:
+        _apagar(tmp)   # disco cheio / zip corrompido: não deixa .part para trás
+        raise
     sha = h.hexdigest()
     final = os.path.join(destino_dir, sha + ".stl")
     os.replace(tmp, final)
     return final, sha, os.path.getsize(final)
 
 
+def _stls_do_zip(z):
+    """Membros .stl que serão extraídos (sem pastas, __MACOSX e arquivos ocultos)."""
+    for m in z.infolist():
+        base = os.path.basename(m.filename)   # basename: sem caminhos do zip
+        if not (m.is_dir() or "__MACOSX" in m.filename or base.startswith(".")
+                or not base.lower().endswith(".stl")):
+            yield base, m
+
+
+def _checar_zip(z, pasta: str) -> None:
+    """Antes de extrair (envio direto e Drive): recusa membro ou soma acima de 2 GB descompactados,
+    compressão anormal (zip-bomba) e falta de disco (1,1 × soma descompactada > espaço livre)."""
+    membros = [m for _b, m in _stls_do_zip(z)]
+    for m in membros:
+        base = os.path.basename(m.filename)
+        if m.file_size > LIMITE_MEMBRO_ZIP:
+            raise ValueError(f"'{base}' tem mais de 2 GB descompactado.")
+        if m.file_size > 1024 ** 2 and m.file_size > RAZAO_MAX_ZIP * max(m.compress_size, 1):
+            raise ValueError(f"'{base}' tem compressão anormal ({m.file_size // max(m.compress_size, 1)}:1) e "
+                             "não parece um STL de verdade (possível \"zip-bomba\"). O .zip foi recusado: "
+                             "envie os arquivos .stl originais, compactados normalmente.")
+    precisa = sum(m.file_size for m in membros)
+    if precisa > LIMITE_MEMBRO_ZIP:
+        raise ValueError(f"O .zip descompactado tem {precisa / 1024 ** 2:.0f} MB e passa do limite de 2 GB.")
+    os.makedirs(pasta, exist_ok=True)
+    livre = shutil.disk_usage(pasta).free
+    if 1.1 * precisa > livre:
+        raise ValueError(f"Espaço em disco insuficiente no servidor: o .zip descompactado tem "
+                         f"{precisa / 1024 ** 2:.0f} MB e há {livre / 1024 ** 2:.0f} MB livres.")
+
+
 def receber(envios, pasta: str = PASTA_CACHE):
-    """envios: objetos-arquivo com .name (.stl ou .zip). -> lista (nome, caminho, sha1, bytes)."""
+    """envios: objetos-arquivo com .name (.stl ou .zip). -> lista (nome, caminho, sha1, bytes).
+    Em qualquer erro, apaga o que este envio já gravou em recebidos/ e repassa o erro."""
     recebidos = []
-    for arq in envios:
-        nome = os.path.basename(arq.name)
-        if hasattr(arq, "seek"):
-            arq.seek(0)
-        if nome.lower().endswith(".zip"):
-            with zipfile.ZipFile(arq) as z:
-                for m in z.infolist():
-                    base = os.path.basename(m.filename)   # basename: sem caminhos do zip
-                    if m.is_dir() or "__MACOSX" in m.filename or base.startswith(".") \
-                            or not base.lower().endswith(".stl"):
-                        continue
-                    if m.file_size > LIMITE_MEMBRO_ZIP:
-                        raise ValueError(f"'{base}' tem mais de 2 GB descompactado.")
-                    with z.open(m) as src:
-                        recebidos.append((base, *_gravar(src, pasta)))
-        elif nome.lower().endswith(".stl"):
-            recebidos.append((nome, *_gravar(arq, pasta)))
+    try:
+        for arq in envios:
+            nome = os.path.basename(arq.name)
+            if hasattr(arq, "seek"):
+                arq.seek(0)
+            if nome.lower().endswith(".zip"):
+                with zipfile.ZipFile(arq) as z:
+                    _checar_zip(z, pasta)
+                    for base, m in _stls_do_zip(z):
+                        with z.open(m) as src:
+                            recebidos.append((base, *_gravar(src, pasta)))
+            elif nome.lower().endswith(".stl"):
+                recebidos.append((nome, *_gravar(arq, pasta)))
+    except BaseException:
+        for _nome, cam, _sha, _tam in recebidos:
+            _apagar(cam)
+        raise
     return recebidos
+
+
+# ── 1b. Recebendo por link do Google Drive (contorna o limite de envio do Cloud) ────
+
+LIMITE_DRIVE_MB = 2048   # padrão de DCUBIC_MAX_DRIVE_MB (o app lê secrets/ambiente)
+FATOR_DISCO = 2.5        # download (1×) + cópia/extração em recebidos/ (1×) + folga (saída, ASCII->binário)
+
+
+def _apagar(caminho):
+    if os.path.isfile(caminho):
+        os.remove(caminho)
+
+
+class _GravadorLimitado:
+    """Destino do gdown (que grava em blocos de 512 KB): conta os bytes e interrompe o
+    download ao passar do limite ou ao faltar disco; avisa o progresso a cada ~8 MB."""
+
+    def __init__(self, f, limite_bytes, livre_bytes, progresso):
+        self.f, self.limite, self.livre, self.p = f, limite_bytes, livre_bytes, progresso
+        self.n = self._ultimo = 0
+
+    def write(self, b):
+        self.n += len(b)
+        if self.n > self.limite:
+            raise ValueError(f"O arquivo do Drive passa do limite de {self.limite // 1024 ** 2} MB "
+                             "(DCUBIC_MAX_DRIVE_MB). O download foi interrompido.")
+        if FATOR_DISCO * self.n > self.livre:
+            precisa_mb = max(1, math.ceil(FATOR_DISCO * self.n / 1024 ** 2))
+            raise ValueError(f"Espaço em disco insuficiente no servidor: são necessários cerca de "
+                             f"{precisa_mb} MB livres e há apenas {self.livre // 1024 ** 2} MB. "
+                             "O download foi interrompido.")
+        if self.n - self._ultimo >= 8 * 1024 ** 2:
+            self._ultimo = self.n
+            mb = self.n / 1024 ** 2
+            # ponytail: o gdown não expõe o tamanho total; barra assintótica + MB baixados
+            self.p(0.9 * mb / (mb + 300), f"Baixando… {mb:.0f} MB")
+        return self.f.write(b)
+
+
+def id_do_drive(link: str) -> str:
+    """ID do arquivo em links /file/d/ID/... ou ...?id=ID (aceita também o ID puro)."""
+    import re
+    link = (link or "").strip()
+    m = (re.search(r"/file/d/([\w-]{10,})", link) or re.search(r"[?&]id=([\w-]{10,})", link)
+         or re.fullmatch(r"([\w-]{20,})", link))
+    if not m:
+        raise ValueError("Link do Google Drive não reconhecido. Use o link de compartilhamento "
+                         "(…/file/d/ID/… ou …?id=ID).")
+    return m.group(1)
+
+
+def baixar_do_drive(link: str, limite_mb: int = LIMITE_DRIVE_MB, pasta: str = PASTA_CACHE, progresso=None):
+    """Baixa o arquivo público do Drive direto para disco (gdown, blocos de 512 KB) e o
+    entrega a `receber_baixado`. -> lista (nome, caminho, sha1, bytes), igual a `receber`."""
+    import gdown
+    from gdown.exceptions import FileURLRetrievalError
+    p = progresso or (lambda frac, texto: None)
+    fid = id_do_drive(link)
+    destino_dir = os.path.join(pasta, "drive")
+    os.makedirs(destino_dir, exist_ok=True)
+    livre = shutil.disk_usage(destino_dir).free
+    # nome único por importação: dois usuários com o mesmo link não gravam no mesmo arquivo
+    fd, bruto = tempfile.mkstemp(dir=destino_dir, prefix=f"drive_{fid[:8]}_", suffix=".part")
+    p(0.0, "Baixando…")
+    try:
+        with os.fdopen(fd, "wb") as f:
+            gdown.download(f"https://drive.google.com/uc?id={fid}",
+                           _GravadorLimitado(f, limite_mb * 1024 ** 2, livre, p), quiet=True)
+    except Exception as e:
+        _apagar(bruto)
+        if isinstance(e, ValueError):   # limite ou disco (mensagem já pronta)
+            raise
+        if isinstance(e, FileURLRetrievalError):
+            raise ValueError("Não foi possível baixar do Google Drive: o arquivo não está público ou o "
+                             "Drive bloqueou temporariamente o download (excesso de acessos). No Google "
+                             "Drive: Compartilhar > Acesso geral: Qualquer pessoa com o link.") from None
+        raise ValueError(f"Falha ao baixar do Google Drive ({type(e).__name__}). "
+                         "Verifique a conexão e tente novamente.") from None
+    return receber_baixado(bruto, pasta, progresso=p)
+
+
+def receber_baixado(caminho: str, pasta: str = PASTA_CACHE, progresso=None):
+    """Pós-download: valida (.zip pela assinatura PK, .stl pelo cabeçalho binário 84+50n ou
+    'solid' ASCII), extrai/copia para recebidos/ por blocos (via `receber`) e apaga o bruto —
+    SÓ quando ele está na pasta de downloads do app (pasta/drive); arquivo de fora nunca é apagado.
+    -> lista (nome, caminho, sha1, bytes)."""
+    p = progresso or (lambda frac, texto: None)
+    meu = os.path.dirname(os.path.realpath(caminho)) == os.path.realpath(os.path.join(pasta, "drive"))
+    try:
+        with open(caminho, "rb") as f:
+            eh_zip = f.read(4) == b"PK\x03\x04"
+        if not eh_zip:   # .zip: limites, razão e disco checados em receber() (_checar_zip)
+            try:
+                tipo_stl(caminho)
+            except (ValueError, struct.error):
+                raise ValueError("O arquivo baixado não é um .stl nem um .zip válido (o link pode exigir "
+                                 "login ou apontar para outro tipo de arquivo).") from None
+        if meu:   # receber() escolhe .zip/.stl pelo nome
+            final = os.path.splitext(caminho)[0] + (".zip" if eh_zip else ".stl")
+            os.replace(caminho, final)
+            caminho = final
+        p(0.05, "Extraindo…" if eh_zip else "Recebendo…")
+        with open(caminho, "rb") as f:
+            return receber([f], pasta)
+    finally:
+        if meu:
+            _apagar(caminho)
+
+
+def limpar_cache_antigo(pasta: str = PASTA_CACHE, dias: float = 2) -> list:
+    """Apaga arquivos com mais de `dias` dias DENTRO da pasta de cache do app (e as subpastas que
+    ficarem vazias); a própria pasta fica. Recusa qualquer pasta que não se chame
+    dcubic_upload_cache (protege contra caminho vazio, raiz, home, /tmp). Não segue links. -> apagados."""
+    real = os.path.realpath(pasta) if pasta else ""
+    if not pasta or os.path.basename(real) != os.path.basename(PASTA_CACHE) or real == os.path.dirname(real):
+        raise ValueError(f"Limpeza recusada: {pasta!r} não é a pasta de cache do app.")
+    if not os.path.isdir(real):
+        return []
+    limite = time.time() - dias * 86400
+    apagados = []
+    for raiz, subpastas, arquivos in os.walk(real, topdown=False):
+        for nome in arquivos:
+            cam = os.path.join(raiz, nome)
+            try:
+                if os.lstat(cam).st_mtime < limite:
+                    os.remove(cam)
+                    apagados.append(cam)
+            except OSError:
+                pass   # em uso / já apagado por outra sessão
+        if raiz != real:
+            try:
+                os.rmdir(raiz)   # só apaga se vazia
+                apagados.append(raiz)
+            except OSError:
+                pass
+    return apagados
+
+
+def processar_recebidos(recebidos, pasta: str = PASTA_CACHE, progresso=None):
+    """Pós-recebimento comum ao envio e ao Drive: checagem de memória (D1) + compactação."""
+    checar_memoria(recebidos)
+    return compactar_recebidos(recebidos, pasta, progresso=progresso)
 
 
 # ── 2. Lendo ────────────────────────────────────────────────────────────────────
@@ -392,3 +574,19 @@ if __name__ == "__main__":
     assert r[0]["tri_antes"] == 12 and r[0]["tri_depois"] == 12 and not r[0]["reduzida"], r
     assert tipo_stl(r[0]["caminho"]) == "binario"
     print("stl_compactar OK:", r[0]["tri_antes"], "->", r[0]["tri_depois"], "triângulos")
+    # Drive: ID nos dois formatos; arquivo de fora de pasta/drive não é apagado; HTML é recusado.
+    _fid = "1uqU_6-O9MqrwWzavr74CJU_KQJIJWDV1"
+    assert id_do_drive(f"https://drive.google.com/file/d/{_fid}/view?usp=sharing") == _fid
+    assert id_do_drive(f"https://drive.google.com/open?id={_fid}") == _fid
+    with open(os.path.join(d, "cubo.stl"), "rb") as a, open(os.path.join(d, "fora.stl"), "wb") as b:
+        b.write(a.read())
+    assert receber_baixado(os.path.join(d, "fora.stl"), pasta=d) and os.path.isfile(os.path.join(d, "fora.stl"))
+    os.makedirs(os.path.join(d, "drive"), exist_ok=True)
+    with open(os.path.join(d, "drive", "x.part"), "w") as b:
+        b.write("<!DOCTYPE html><title>Sign in</title>")
+    try:
+        receber_baixado(os.path.join(d, "drive", "x.part"), pasta=d)
+        raise AssertionError("HTML aceito")
+    except ValueError:
+        assert not os.path.exists(os.path.join(d, "drive", "x.part"))
+    print("drive OK")
