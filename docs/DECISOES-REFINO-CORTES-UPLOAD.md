@@ -98,3 +98,10 @@ que a div. Decisões (feitas no worktree `refino/correcao-camera`, a integrar à
 - **Limite seguro de memória:** `tamanho do envio (na RAM) + 450 MB de trabalho <= DCUBIC_LIMITE_MEMORIA_MB` (padrão 900). Acima disso, mensagem clara pedindo o `.zip`. Ex.: o STL bruto de 744 MB sem zip é recusado; o mesmo arquivo em `.zip` (114 MB) passa.
 - **Memória dos cortes:** `_trimesh_cached` passou a ter `max_entries=6`, para não acumular na RAM as malhas de todos os dentes já abertos na sessão.
 - **Unidade:** o cabeçalho dos STL do CTAnalyser diz "unit: mm", mas as coordenadas (~1.400 de comprimento) são de voxel; mantida a decisão da Etapa A ("un.").
+
+## Resumo do refino (Etapas A, B e C) — 21/10/2026
+
+- **A — Cortes (82f6faa):** aba "Cortes" com Axial/Coronal/Sagital calculados do STL bruto (trimesh + shapely + Pillow), tolerando malhas abertas; "Mostrar plano no 3D" recorta o modelo via `clip_plane` e marca o plano. Correção da câmera (3e5eb81) e painel Aparência (Bloco 1) preservados e conferidos no navegador. Cortes: 25–430 ms sem cache, < 0,4 ms com cache.
+- **B — Exemplo substitui (a556942):** carregar um dente de exemplo troca o dente atual; o novo abre na câmera padrão. Estado de "Mostrar plano no 3D" preservado entre trocas.
+- **C — Envio com compactação (a58945a):** `.stl`/`.zip` na barra lateral, até 1 GB; compactação por agrupamento de vértices com grade comum (~300 mil triângulos por estrutura, sobreposição mantida), cache por SHA-1, resultados de 2,4 a 15,0 MB (teto 30 MB). STL de 744 MB enviado em `.zip` de 114 MB: 7,6 s, pico 430 MB no teste isolado.
+- **Pendências/limitações:** unidade "un." até haver calibração de voxel; o pico de RSS do servidor inteiro chegou a 1.299 MB durante os testes de envio pela interface (Streamlit + 3D + cortes + envio na RAM) — acima de 1 GB, o que pede atenção antes de publicar no Streamlit Cloud (ajustar `DCUBIC_LIMITE_MEMORIA_MB` e/ou reduzir caches do 3D); envio pela interface testado com arquivo injetado via JavaScript no navegador embutido, a conferir com o seletor de arquivos real.
