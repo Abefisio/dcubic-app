@@ -341,6 +341,28 @@ def _trocar_dente(_paths):
 # disco por blocos e compactado automaticamente (modules/stl_compactar.py); o resultado
 # entra em stl_paths e segue o mesmo fluxo do 3D e dos Cortes.
 # ---------------------------------------------------------------------------
+def _limite_envio_mb():
+    """Limite efetivo do envio em MB: DCUBIC_MAX_UPLOAD_MB (st.secrets ou ambiente) tem
+    prioridade; sem ele, 200 no Streamlit Community Cloud (detectado por /mount/src ou
+    HOSTNAME com "streamlit") e 2048 no Mac/servidor USP."""
+    try:
+        _v = st.secrets.get("DCUBIC_MAX_UPLOAD_MB")
+    except Exception:  # sem secrets.toml
+        _v = None
+    _v = _v or os.environ.get("DCUBIC_MAX_UPLOAD_MB")
+    if _v:
+        return int(_v)
+    _no_cloud = os.path.isdir("/mount/src") or "streamlit" in os.environ.get("HOSTNAME", "").lower()
+    return 200 if _no_cloud else 2048
+
+
+_LIMITE_ENVIO_MB = _limite_envio_mb()
+from streamlit import config as _st_config
+if _LIMITE_ENVIO_MB < _st_config.get_option("server.maxUploadSize"):
+    # O seletor de arquivos lê esta opção a cada exibição e recusa no navegador, antes de
+    # enviar: o servidor (Cloud, 1 GB de RAM) nem chega a receber o arquivo grande.
+    _st_config.set_option("server.maxUploadSize", _LIMITE_ENVIO_MB)
+
 st.sidebar.markdown("---")
 st.sidebar.subheader("Enviar STL")
 _upl_n = st.session_state.setdefault("_upl_n", 0)
@@ -350,8 +372,12 @@ _envios = st.sidebar.file_uploader(
     accept_multiple_files=True,
     key=f"upl_stl_{_upl_n}",
 )
-st.sidebar.caption("Limite de 200 MB por envio. STL maiores: envie compactado em .zip "
-                   "(no Mac: clique direito no arquivo > Comprimir)")
+if _LIMITE_ENVIO_MB < 2048:
+    st.sidebar.caption(f"Limite de {_LIMITE_ENVIO_MB} MB por envio. Arquivos acima de "
+                       f"{_LIMITE_ENVIO_MB} MB só podem ser abertos na versão local/servidor USP.")
+else:
+    st.sidebar.caption(f"Limite de {_LIMITE_ENVIO_MB} MB por envio. Malhas acima de 500.000 "
+                       "triângulos são reduzidas automaticamente para visualização.")
 # Envio em duas etapas, para não manter na RAM o arquivo enviado e a compactação ao mesmo tempo:
 #  1) grava os arquivos em disco (por blocos) e troca a chave do uploader -> no rerun o
 #     Streamlit descarta os bytes do envio;
@@ -374,7 +400,7 @@ if _envios:
     from modules import stl_compactar as _cmp
     _barra = st.sidebar.progress(0.0, text="Recebendo…")
     try:
-        _cmp.checar_tamanho(sum(_e.size for _e in _envios))  # etapa 1: só o tamanho, sem RSS
+        _cmp.checar_tamanho(sum(_e.size for _e in _envios), _LIMITE_ENVIO_MB)  # etapa 1: só o tamanho
         st.session_state["_upl_recebidos"] = _cmp.receber(_envios)
         if not st.session_state["_upl_recebidos"]:
             raise ValueError("Nenhum arquivo .stl encontrado no envio.")
@@ -388,11 +414,11 @@ if _envios:
 if "_upl_recebidos" in st.session_state:
     from modules import stl_compactar as _cmp
     _recebidos = st.session_state.pop("_upl_recebidos")
-    _barra = st.sidebar.progress(0.1, text="Compactando…")
+    _barra = st.sidebar.progress(0.1, text="Preparando a malha…")
     try:
         # Libera o dente anterior antes de compactar (pico de memória menor)
         _load_stl_from_paths.clear(); _trimesh_cached.clear(); _interior_cached.clear()
-        _cmp.checar_memoria()  # etapa 2: RSS só agora, com os bytes do envio já liberados (+ gc)
+        _cmp.checar_memoria(_recebidos)  # etapa 2: malhas REDUZIDAS + RSS (exceto macOS), bytes já liberados
         _res = _cmp.compactar_recebidos(
             _recebidos, progresso=lambda f, t: _barra.progress(min(float(f), 1.0), text=t))
         _trocar_dente([_r["caminho"] for _r in _res])
@@ -413,10 +439,15 @@ elif _upl_msg:
     _mb = lambda b: f"{b / 1024 ** 2:.1f} MB".replace(".", ",")
     _n = lambda n: f"{n:,}".replace(",", ".")
     for _r in _upl_msg[1]:
-        st.sidebar.caption(
-            f"**{_r['nome']}**: {_mb(_r['bytes_antes'])} → {_mb(_r['bytes_depois'])}; "
-            f"{_n(_r['tri_antes'])} → {_n(_r['tri_depois'])} triângulos"
-            + (" (do cache)" if _r["cache"] else ""))
+        if _r.get("reduzida", True):
+            st.sidebar.info(
+                f"**{_r['nome']}** — Malha original: {_n(_r['tri_antes'])} triângulos → reduzida "
+                f"para {_n(_r['tri_depois'])} para visualização. "
+                f"({_mb(_r['bytes_antes'])} → {_mb(_r['bytes_depois'])}"
+                + (", do cache)" if _r["cache"] else ")"))
+        else:
+            st.sidebar.caption(f"**{_r['nome']}**: {_n(_r['tri_antes'])} triângulos (sem redução), "
+                               f"{_mb(_r['bytes_depois'])}")
 
 # ---------------------------------------------------------------------------
 # DENTES DE EXEMPLO — Drive (arquivo único) ou Drive (zip com múltiplas estruturas)

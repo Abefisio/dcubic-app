@@ -7,7 +7,8 @@ tratamento manual. Fluxo de `receber_e_compactar`:
                   shutil.copyfileobj), calculando o SHA-1 no caminho; nada inteiro na RAM;
   2. lendo      — detecta binário x ASCII (ASCII é convertido em fluxo para binário) e
                   mede área e caixa envolvente lendo o binário com np.memmap em blocos;
-  3. compactando— agrupamento de vértices numa grade com célula ABSOLUTA (mesmas unidades
+  3. compactando— só nas estruturas com mais de ALVO_TRIANGULOS (as menores passam intactas):
+                  agrupamento de vértices numa grade com célula ABSOLUTA (mesmas unidades
                   do STL), calculada para ~ALVO_TRIANGULOS por estrutura; cada célula vira a
                   média dos seus vértices; triângulos degenerados e duplicados são removidos.
                   A MESMA grade (origem e célula) vale para todas as estruturas do envio,
@@ -23,12 +24,13 @@ import json
 import os
 import shutil
 import struct
+import sys
 import tempfile
 import zipfile
 
 import numpy as np
 
-ALVO_TRIANGULOS = 300_000          # por estrutura
+ALVO_TRIANGULOS = 500_000          # por estrutura; só reduz acima disso (≈ 25 MB em STL binário)
 LIMITE_SAIDA_BYTES = 30 * 1024 * 1024   # mesmo teto de 30 MB do app (commit 76d235f)
 BLOCO_TRIANGULOS = 250_000   # blocos menores = pico menor (1 milhão custava ~260 MB de trabalho)
 # Memória: o app grava o envio em disco e libera os bytes do Streamlit ANTES de compactar
@@ -36,6 +38,10 @@ BLOCO_TRIANGULOS = 250_000   # blocos menores = pico menor (1 milhão custava ~2
 # inteiro não deve passar de DCUBIC_LIMITE_MEMORIA_MB (padrão 800).
 # ponytail: estimativa fixa de trabalho; ajuste DCUBIC_LIMITE_MEMORIA_MB conforme a RAM do servidor.
 TRABALHO_MB = 150
+# ponytail: estimativa fixa da malha REDUZIDA já aberta no app (3D + Cortes), por triângulo;
+# medida no teste de 21/10/2026 (ver docs/DECISOES-REFINO-CORTES-UPLOAD.md). Recalibre se o 3D mudar.
+BYTES_APP_POR_TRIANGULO = 400
+LIMITE_LOCAL_MB = 2048   # mesmo valor de server.maxUploadSize em .streamlit/config.toml
 LIMITE_SEGURO_MB = int(os.environ.get("DCUBIC_LIMITE_MEMORIA_MB", "800"))
 LIMITE_MEMBRO_ZIP = 2 * 1024 ** 3   # recusa membros de zip acima de 2 GB descompactados
 PASTA_CACHE = os.path.join(tempfile.gettempdir(), "dcubic_upload_cache")
@@ -62,27 +68,47 @@ def rss_mb():
         return None
 
 
-def checar_tamanho(bytes_envio: int) -> None:
-    """Etapa 1 do envio: recusa com mensagem clara quando o envio, somado ao trabalho de
-    compactação, passa do limite. Não olha o RSS (ainda inclui os bytes do envio)."""
+def checar_tamanho(bytes_envio: int, limite_mb: int = LIMITE_LOCAL_MB) -> None:
+    """Etapa 1 do envio: recusa, com mensagem clara, o envio acima do limite efetivo
+    (DCUBIC_MAX_UPLOAD_MB; 200 MB no Streamlit Cloud). Não olha o RSS (os bytes do envio
+    ainda estão na RAM do Streamlit, que os recebeu antes do app rodar)."""
     mb = bytes_envio / 1024 ** 2
-    if mb + TRABALHO_MB > LIMITE_SEGURO_MB:
-        raise MemoriaInsuficiente(
-            f"O envio tem {mb:.0f} MB e, somado ao trabalho de compactação (~{TRABALHO_MB} MB), "
-            f"excede o limite seguro de memória do servidor ({LIMITE_SEGURO_MB} MB). "
-            "Envie o STL compactado em .zip (no Mac: clique direito no arquivo > Comprimir)."
-        )
+    if mb > limite_mb:
+        if limite_mb < LIMITE_LOCAL_MB:
+            raise ValueError(f"O envio tem {mb:.0f} MB. Arquivos acima de {limite_mb} MB só podem "
+                             "ser abertos na versão local/servidor USP.")
+        raise ValueError(f"O envio tem {mb:.0f} MB e passa do limite de {limite_mb} MB por envio.")
 
 
-def checar_memoria() -> None:
+def triangulos_no_arquivo(caminho: str) -> int:
+    """Nº de triângulos pelo cabeçalho (binário) ou estimado pelo tamanho (ASCII, ~250 B/triângulo)."""
+    try:
+        if tipo_stl(caminho) == "binario":
+            return (os.path.getsize(caminho) - 84) // 50
+    except ValueError:
+        pass
+    return os.path.getsize(caminho) // 250
+
+
+def memoria_necessaria_mb(recebidos, alvo: int = ALVO_TRIANGULOS) -> float:
+    """Trabalho da compactação + malhas REDUZIDAS abertas no app (não o arquivo bruto)."""
+    tri = sum(min(triangulos_no_arquivo(cam), alvo) for _nome, cam, _sha, _tam in recebidos)
+    return TRABALHO_MB + tri * BYTES_APP_POR_TRIANGULO / 1024 ** 2
+
+
+def checar_memoria(recebidos=(), alvo: int = ALVO_TRIANGULOS) -> None:
     """Etapa 2 do envio (bytes do envio já liberados): recusa com mensagem clara quando a
-    memória atual do processo, somada ao trabalho de compactação, passa do limite."""
+    memória atual, somada à necessária (trabalho + malhas reduzidas), passa do limite.
+    No macOS o RSS não é usado: o alocador retém memória já liberada (MallocLargeCache,
+    Etapa D1) e o número inflado recusaria arquivos grandes sem motivo."""
     gc.collect()
-    atual = rss_mb()
-    if atual is not None and atual + TRABALHO_MB > LIMITE_SEGURO_MB:
+    precisa = memoria_necessaria_mb(recebidos, alvo)
+    atual = None if sys.platform == "darwin" else rss_mb()
+    if (atual or 0) + precisa > LIMITE_SEGURO_MB:
         raise MemoriaInsuficiente(
-            f"O servidor está usando {atual:.0f} MB de memória; a compactação precisa de mais "
-            f"~{TRABALHO_MB} MB e passaria do limite seguro ({LIMITE_SEGURO_MB} MB). "
+            (f"O servidor está usando {atual:.0f} MB de memória; " if atual else "")
+            + f"abrir este envio precisa de ~{precisa:.0f} MB (compactação + malhas reduzidas) e "
+            f"passaria do limite seguro ({LIMITE_SEGURO_MB} MB). "
             "Clique em 'Limpar STL', aguarde alguns segundos e envie novamente."
         )
 
@@ -298,14 +324,16 @@ def compactar_recebidos(recebidos, pasta: str = PASTA_CACHE, alvo: int = ALVO_TR
             binarios.append(cam_bin)
         infos.append(info)
 
-    origem, celula = grade_comum(infos, alvo)
+    reduzir = [info["n"] > alvo for info in infos]   # até o alvo, a malha passa intacta
+    grandes = [info for info, r in zip(infos, reduzir) if r]
+    origem, celula = grade_comum(grandes, alvo) if grandes else (np.zeros(3), 0.0)
     resultados = []
     for _tentativa in range(3):   # se alguma estrutura passar de 30 MB, engrossa a grade e refaz
         tag = hashlib.md5(json.dumps([np.round(origem, 6).tolist(), round(celula, 9)]).encode()).hexdigest()[:10]
         resultados = []
         for i, ((nome, cam, sha, tam), info) in enumerate(zip(recebidos, infos)):
-            p(0.35 + 0.6 * i / len(recebidos), f"Compactando {nome}…")
-            pasta_saida = os.path.join(pasta, f"{sha}_{tag}")
+            p(0.35 + 0.6 * i / len(recebidos), f"{'Reduzindo' if reduzir[i] else 'Preparando'} {nome}…")
+            pasta_saida = os.path.join(pasta, f"{sha}_{tag if reduzir[i] else 'original'}")
             saida = os.path.join(pasta_saida, os.path.splitext(nome)[0] + ".stl")
             em_cache = os.path.isfile(saida)
             if em_cache:
@@ -319,12 +347,17 @@ def compactar_recebidos(recebidos, pasta: str = PASTA_CACHE, alvo: int = ALVO_TR
                         ascii_para_binario(cam, cam_bin)
                     binarios[i] = cam_bin
                 os.makedirs(pasta_saida, exist_ok=True)
-                n_out = compactar(cam_bin, origem, celula, saida + ".part")
-                os.replace(saida + ".part", saida)
+                if reduzir[i]:
+                    n_out = compactar(cam_bin, origem, celula, saida + ".part")
+                    os.replace(saida + ".part", saida)
+                else:   # mesma malha, só em binário: origem espacial intacta
+                    os.replace(cam_bin, saida)
+                    n_out = info["n"]
             resultados.append({"nome": os.path.splitext(nome)[0], "caminho": saida, "bytes_antes": tam,
                                "bytes_depois": os.path.getsize(saida), "tri_antes": info["n"],
-                               "tri_depois": int(n_out), "cache": em_cache, "celula": celula})
-        maior = max(r["bytes_depois"] for r in resultados)
+                               "tri_depois": int(n_out), "cache": em_cache, "celula": celula,
+                               "reduzida": reduzir[i]})
+        maior = max(r["bytes_depois"] for r, red in zip(resultados, reduzir) if red) if grandes else 0
         if maior <= LIMITE_SAIDA_BYTES:
             break
         celula *= float(np.sqrt(maior / (0.8 * LIMITE_SAIDA_BYTES)))
@@ -356,6 +389,6 @@ if __name__ == "__main__":
         env = io.BytesIO(a.read())
     env.name = "cubo.stl"
     r = receber_e_compactar([env], pasta=d, alvo=10_000)
-    assert r[0]["tri_antes"] == 12 and r[0]["tri_depois"] == 12, r
+    assert r[0]["tri_antes"] == 12 and r[0]["tri_depois"] == 12 and not r[0]["reduzida"], r
     assert tipo_stl(r[0]["caminho"]) == "binario"
     print("stl_compactar OK:", r[0]["tri_antes"], "->", r[0]["tri_depois"], "triângulos")
