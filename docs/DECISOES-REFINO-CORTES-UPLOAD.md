@@ -128,3 +128,7 @@ que a div. Decisões (feitas no worktree `refino/correcao-camera`, a integrar à
 - Preenchimento par-ímpar (even-odd) em raster (`_par_impar`): regiões separadas pelo traço formam um grafo; profundidade ímpar = sólido, par = vazio. Câmara pulpar/canais vazios ficam como furo.
 - Tentativa vetorial (colar pontas com shapely) descartada: o STL "Molar" gera ~1.800 segmentos fragmentados por corte; o raster foi mais robusto.
 - Limitação: lacunas maiores que a tolerância deixam o contorno aberto (ex.: Molar a 33% da altura, só contorno). Contorno íntegro (malhas fechadas) segue o caminho vetorial exato com furos.
+
+## Etapa D3 — Aba Cortes não pula (21/10/2026)
+- `st.tabs(["3D","Cortes"])` trocado por `st.segmented_control` com `key="aba_visualizacao"` (disponível no Streamlit 1.50): o rerun do checkbox "Mostrar plano no 3D" não volta mais ao 3D.
+- Só a aba ativa é renderizada; o estado dos widgets de Cortes (plano, eixo, sliders) é preservado por reatribuição em `session_state`, e o plano do 3D é lido de lá (funciona também com a aba 3D ativa).

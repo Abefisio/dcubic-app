@@ -728,31 +728,39 @@ if _is_stl:
         for _mi in _stl_ok
     }
 
-    # ── Abas: 3D | Cortes. A aba Cortes é executada ANTES do 3D para que o plano
-    #    de corte (opcional) já use os valores atuais dos sliders. ──
-    _tab_3d, _tab_cortes = st.tabs(["3D", "Cortes"])
+    # ── Visualização: 3D | Cortes. Seletor com estado (não st.tabs): marcar/desmarcar "Mostrar
+    #    plano no 3D" provoca rerun e st.tabs voltava à 1ª aba. A aba Cortes é calculada ANTES
+    #    do 3D para que o plano (opcional) use os valores atuais dos sliders. ──
+    _aba = st.segmented_control("Visualização", ["3D", "Cortes"], default="3D",
+                                key="aba_visualizacao", label_visibility="collapsed") or "3D"
     _plano_3d = None   # (eixo xyz do Plotly 0/1/2, valor) quando "Mostrar plano no 3D" está ligado
-    with _tab_cortes:
-        _por_nome = {os.path.splitext(os.path.basename(_p))[0]: (_p, _mt)
-                     for _p, _mt in _stl_path_mtime_dedup}
-        _tm = {}
-        for _mi in _stl_ok:
-            if _mi["name"] in _por_nome:
-                _pp, _mt = _por_nome[_mi["name"]]
-                _tm[_mi["name"]] = _trimesh_cached(_pp, _mt, _mi["n_faces"], _mi["mesh"])
-        _vis_tm = tuple(n for n in _tm if _visible_dict.get(n, True))
+    _por_nome = {os.path.splitext(os.path.basename(_p))[0]: (_p, _mt)
+                 for _p, _mt in _stl_path_mtime_dedup}
+    _tm = {}
+    for _mi in _stl_ok:
+        if _mi["name"] in _por_nome:
+            _pp, _mt = _por_nome[_mi["name"]]
+            _tm[_mi["name"]] = _trimesh_cached(_pp, _mt, _mi["n_faces"], _mi["mesh"])
+    _vis_tm = tuple(n for n in _tm if _visible_dict.get(n, True))
+    if _vis_tm:
+        _bb = _slices.bbox_combinado(_tm)
+        _ext_max = float(max(_bb[1] - _bb[0]))
+        _passo = _slices.PASSO_MM if _ext_max < 50 else 1.0
+        _chave_arq = tuple(_stl_path_mtime_dedup)
+        _sig = "_".join(f"{v:.1f}" for v in _bb.ravel())
+        # Widgets não exibidos perdem o estado no Streamlit: reatribui para preservar
+        # (o plano no 3D depende deles mesmo com a aba 3D ativa).
+        for _k in ("cortes_plano", "cortes_plano_eixo", *(f"corte_{_n}_{_sig}" for _n in _slices.EIXOS)):
+            if _k in st.session_state:
+                st.session_state[_k] = st.session_state[_k]
+    if _aba == "Cortes":
         if not _vis_tm:
             st.info("Ative ao menos uma estrutura na barra lateral para ver os cortes.")
         else:
-            _bb = _slices.bbox_combinado(_tm)
-            _ext_max = float(max(_bb[1] - _bb[0]))
-            _passo = _slices.PASSO_MM if _ext_max < 50 else 1.0
-            _chave_arq = tuple(_stl_path_mtime_dedup)
-            _sig = "_".join(f"{v:.1f}" for v in _bb.ravel())
             _cc1, _cc2 = st.columns([1, 2])
-            _mostrar_plano = _cc1.checkbox("Mostrar plano no 3D", key="cortes_plano")
-            _eixo_plano = _cc2.radio("Plano no 3D", list(_slices.EIXOS), horizontal=True,
-                                     key="cortes_plano_eixo", label_visibility="collapsed")
+            _cc1.checkbox("Mostrar plano no 3D", key="cortes_plano")
+            _cc2.radio("Plano no 3D", list(_slices.EIXOS), horizontal=True,
+                       key="cortes_plano_eixo", label_visibility="collapsed")
             _cols = st.columns(3)
             for _col, _ne in zip(_cols, _slices.EIXOS):
                 _ax = _slices.EIXOS[_ne][0]
@@ -767,12 +775,16 @@ if _is_stl:
                         st.warning("Fora do dente nesta posição")
                     else:
                         st.image(_png, width="stretch")
-                if _mostrar_plano and _ne == _eixo_plano:
-                    _plano_3d = (_ax, _pq * _slices.PASSO_MM)
             st.caption("Cortes calculados direto do STL bruto, sem tratamento manual. "
                        f"Escala em {_slices.UNIDADE} (unidades nativas do STL; calibração pendente).")
+    if _vis_tm and st.session_state.get("cortes_plano"):
+        _ne = st.session_state.get("cortes_plano_eixo", list(_slices.EIXOS)[0])
+        _ax = _slices.EIXOS[_ne][0]
+        _meio = (float(_bb[0][_ax]) + float(_bb[1][_ax])) / 2
+        _pq = int(round(st.session_state.get(f"corte_{_ne}_{_sig}", _meio) / _slices.PASSO_MM))
+        _plano_3d = (_ax, _pq * _slices.PASSO_MM)
 
-    with _tab_3d:
+    if _aba == "3D":
         st.subheader("Render 3D — malhas STL")
         if _meshes_dict:
             _meshes_filtrado = {n: m for n, m in _meshes_dict.items() if _visible_dict.get(n, True)}
