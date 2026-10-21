@@ -547,6 +547,55 @@ if _is_stl:
         _meshes_dict[_mi["name"]] = _mi["mesh"]
         _opac_dict[_mi["name"]] = _OPAC_MAP.get(next((k for k in _OPAC_MAP if k in _nl), ""), 1.0)
 
+    # ── Aparência — controles que antes ficavam no painel JS sobre o 3D ──
+    # Cada ajuste gera rerun, mas o fragmento pesado do Plotly vem do cache;
+    # só um pequeno objeto JS (AP) muda e é aplicado no navegador.
+    import time as _time
+    _ss = st.session_state
+    # Padrões via session_state (sem value= nos widgets); a reatribuição mantém o valor
+    # do controle oculto ao alternar Cinza/Cor personalizada.
+    for _k, _padrao in (("ap_opac", 100), ("ap_tom", 235), ("ap_cor", "#ebebeb")):
+        _ss[_k] = _ss.get(_k, _padrao)
+    _CAM_PADRAO = {"eye": {"x": 1.5, "y": 1.5, "z": 1.2}, "up": {"x": 0, "y": 0, "z": 1},
+                   "center": {"x": 0, "y": 0, "z": 0}}
+    _VISTAS = {
+        "Topo":        {"eye": {"x": 0, "y": 0, "z": 2.2}, "up": {"x": 0, "y": 1, "z": 0}},
+        "Frente":      {"eye": {"x": 0, "y": -2.2, "z": 0}, "up": {"x": 0, "y": 0, "z": 1}},
+        "Lado":        {"eye": {"x": 2.2, "y": 0, "z": 0}, "up": {"x": 0, "y": 0, "z": 1}},
+        "Perspectiva": {"eye": {"x": 1.5, "y": 1.5, "z": 1.2}, "up": {"x": 0, "y": 0, "z": 1}},
+    }
+
+    def _ap_marca(_chave):
+        # Como no painel antigo: o padrão por estrutura só é sobrescrito após o 1º ajuste.
+        _ss[_chave] = True
+
+    def _ap_vista():
+        if _ss.get("ap_vista"):
+            # nonce = instante em ms; o iframe aplica a câmera uma única vez por nonce
+            _ss["_ap_cmd"] = {"n": int(_time.time() * 1000), "cam": _VISTAS[_ss["ap_vista"]]}
+
+    def _ap_reset():
+        _ss["_ap_cmd"] = {"n": int(_time.time() * 1000), "cam": _CAM_PADRAO}
+        _ss["ap_lock"] = False
+        _ss["ap_vista"] = None
+
+    st.sidebar.markdown("---")
+    st.sidebar.subheader("Aparência")
+    st.sidebar.slider("Opacidade (%)", 0, 100, key="ap_opac",
+                      on_change=_ap_marca, args=("ap_opac_on",))
+    st.sidebar.toggle("🔒 Lock (travar câmera)", key="ap_lock")
+    st.sidebar.radio("Cor", ["Cinza", "Cor personalizada"], horizontal=True, key="ap_cor_modo",
+                     on_change=_ap_marca, args=("ap_cor_on",))
+    if _ss.get("ap_cor_modo", "Cinza") == "Cinza":
+        st.sidebar.slider("Tom (Escuro → Claro)", 0, 255, key="ap_tom",
+                          on_change=_ap_marca, args=("ap_cor_on",))
+    else:
+        st.sidebar.color_picker("Cor personalizada", key="ap_cor",
+                                on_change=_ap_marca, args=("ap_cor_on",))
+    st.sidebar.radio("Vista", list(_VISTAS), index=None, horizontal=True, key="ap_vista",
+                     on_change=_ap_vista)
+    st.sidebar.button("🏠 Resetar vista", key="ap_reset", on_click=_ap_reset, width="stretch")
+
     # ── Botões de olho para visibilidade por estrutura ──
     st.sidebar.markdown("---")
     st.sidebar.subheader("Estruturas visíveis")
@@ -570,268 +619,141 @@ if _is_stl:
     st.subheader("Render 3D — malhas STL")
     if _meshes_dict:
         _meshes_filtrado = {n: m for n, m in _meshes_dict.items() if _visible_dict.get(n, True)}
-        _fig_stl = create_plotly_3d(
-            _meshes_filtrado, _tissue_colors_stl, opacities=_opac_dict, clip_plane=None,
-            bbox_meshes=_meshes_dict,
+
+        @st.cache_data(show_spinner="Montando o 3D…", max_entries=8)
+        def _fragmento_3d_cached(chave, _meshes_filtrado, _tissue_colors_stl, _opac_dict,
+                                 _meshes_dict, _stl_ok, _revelar_interior):
+            """HTML pesado do Plotly. chave = arquivos+mtime+visibilidade+revelar_interior;
+            mudar só opacidade/cor/vista/lock NÃO regenera este fragmento."""
+            _fig_stl = create_plotly_3d(
+                _meshes_filtrado, _tissue_colors_stl, opacities=_opac_dict, clip_plane=None,
+                bbox_meshes=_meshes_dict,
+            )
+
+            if _revelar_interior and _stl_ok:
+                try:
+                    _casca_mi = next(
+                        (m for m in _stl_ok if any(k in m["name"].lower() for k in ("molar", "raiz"))),
+                        max(_stl_ok, key=lambda m: m["mesh"].n_cells),
+                    )
+                    _casca_pv = _casca_mi["mesh"]
+                    _interior = _interior_cached(
+                        _casca_pv,
+                        (_casca_mi["name"], _casca_pv.n_points, _casca_pv.n_cells, tuple(_casca_pv.bounds)),
+                        128,
+                    )
+                    if _interior is not None:
+                        import plotly.graph_objects as _go
+                        _verts_i = _interior.points
+                        _faces_i = _interior.faces.reshape(-1, 4)[:, 1:]
+                        _fig_stl.add_trace(_go.Mesh3d(
+                            x=_verts_i[:, 2], y=_verts_i[:, 1], z=_verts_i[:, 0],
+                            i=_faces_i[:, 0], j=_faces_i[:, 1], k=_faces_i[:, 2],
+                            color="#7B2FBE", opacity=1.0,
+                            name="Interior",
+                            showlegend=False,
+                            hoverinfo="skip",
+                        ))
+                except ValueError as _ve:
+                    st.warning("Não foi possível gerar o interior: " + str(_ve))
+                except Exception as _ie:
+                    st.warning("Não foi possível gerar o interior: " + str(_ie))
+
+            _fig_stl.update_layout(
+                uirevision="constant",  # preserva câmera entre reruns do Streamlit
+                modebar=dict(orientation="v"),
+                legend=dict(x=0.01, y=0.99, xanchor="left"),  # libera o canto direito para o ícone de câmera
+                height=1156,
+                margin=dict(l=0, r=0, t=0, b=0),
+                scene=dict(
+                    dragmode="orbit",
+                    xaxis=dict(title=dict(font=dict(size=18)), tickfont=dict(size=15)),
+                    yaxis=dict(title=dict(font=dict(size=18)), tickfont=dict(size=15)),
+                    zaxis=dict(title=dict(font=dict(size=18)), tickfont=dict(size=15)),
+                ),
+            )
+            limpar_figura_3d(_fig_stl)
+            return _fig_stl.to_html(
+                include_plotlyjs="cdn", full_html=False, div_id="stl_plot",
+                config={
+                    "displayModeBar": True, "displaylogo": False,
+                    "modeBarButtons": [["toImage"]],  # só o ícone de câmera (Baixar imagem)
+                    "toImageButtonOptions": {"format": "png", "width": 1600,
+                                             "height": 1200, "filename": "modelo_stl"},
+                },
+            )
+
+        _chave_3d = (
+            tuple(_stl_path_mtime_dedup),
+            tuple(sorted(_visible_dict.items())),
+            bool(_revelar_interior),
+        )
+        _plot_frag = _fragmento_3d_cached(
+            _chave_3d, _meshes_filtrado, _tissue_colors_stl, _opac_dict,
+            _meshes_dict, _stl_ok, _revelar_interior,
         )
 
-        if _revelar_interior and _stl_ok:
-            try:
-                _casca_mi = next(
-                    (m for m in _stl_ok if any(k in m["name"].lower() for k in ("molar", "raiz"))),
-                    max(_stl_ok, key=lambda m: m["mesh"].n_cells),
-                )
-                _casca_pv = _casca_mi["mesh"]
-                _interior = _interior_cached(
-                    _casca_pv,
-                    (_casca_mi["name"], _casca_pv.n_points, _casca_pv.n_cells, tuple(_casca_pv.bounds)),
-                    128,
-                )
-                if _interior is not None:
-                    import plotly.graph_objects as _go
-                    _verts_i = _interior.points
-                    _faces_i = _interior.faces.reshape(-1, 4)[:, 1:]
-                    _fig_stl.add_trace(_go.Mesh3d(
-                        x=_verts_i[:, 2], y=_verts_i[:, 1], z=_verts_i[:, 0],
-                        i=_faces_i[:, 0], j=_faces_i[:, 1], k=_faces_i[:, 2],
-                        color="#7B2FBE", opacity=1.0,
-                        name="Interior",
-                        showlegend=False,
-                        hoverinfo="skip",
-                    ))
-            except ValueError as _ve:
-                st.warning("Não foi possível gerar o interior: " + str(_ve))
-            except Exception as _ie:
-                st.warning("Não foi possível gerar o interior: " + str(_ie))
-
-        _fig_stl.update_layout(
-            uirevision="constant",  # preserva câmera entre reruns do Streamlit
-            modebar=dict(orientation="v"),
-            height=1156,
-            margin=dict(l=0, r=0, t=0, b=0),
-            scene=dict(
-                dragmode="orbit",
-                xaxis=dict(title=dict(font=dict(size=18)), tickfont=dict(size=15)),
-                yaxis=dict(title=dict(font=dict(size=18)), tickfont=dict(size=15)),
-                zaxis=dict(title=dict(font=dict(size=18)), tickfont=dict(size=15)),
-            ),
-            updatemenus=[dict(
-                type="buttons",
-                direction="right",
-                x=0,
-                y=1.08,
-                showactive=False,
-                buttons=[
-                    dict(label="Topo",
-                         method="relayout",
-                         args=[{"scene.camera.eye": {"x": 0, "y": 0, "z": 2.2},
-                                "scene.camera.up":  {"x": 0, "y": 1, "z": 0}}]),
-                    dict(label="Frente",
-                         method="relayout",
-                         args=[{"scene.camera.eye": {"x": 0, "y": -2.2, "z": 0}}]),
-                    dict(label="Lado",
-                         method="relayout",
-                         args=[{"scene.camera.eye": {"x": 2.2, "y": 0, "z": 0}}]),
-                    dict(label="Perspectiva",
-                         method="relayout",
-                         args=[{"scene.camera.eye": {"x": 1.5, "y": 1.5, "z": 1.2}}]),
-                ],
-            )],
-        )
-        # Render via iframe HTML: todos os controles em JS puro — sem rerun.
+        # Valores da seção "Aparência" -> pequeno objeto JS injetado ANTES do fragmento.
+        if _ss.get("ap_cor_on"):
+            _ap_cor = (_ss.get("ap_cor", "#ebebeb") if _ss.get("ap_cor_modo") == "Cor personalizada"
+                       else "rgb({0},{0},{0})".format(_ss.get("ap_tom", 235)))
+        else:
+            _ap_cor = None
+        _ap = {
+            "opac": _ss.get("ap_opac", 100) if _ss.get("ap_opac_on") else None,
+            "cor": _ap_cor,
+            "lock": bool(_ss.get("ap_lock")),
+            "cmd": _ss.get("_ap_cmd"),
+        }
         import streamlit.components.v1 as _components
-        limpar_figura_3d(_fig_stl)
-        _plot_frag = _fig_stl.to_html(
-            include_plotlyjs="cdn", full_html=False, div_id="stl_plot",
-            config={"displayModeBar": True},
-        )
         _ctrl_html = """
 <style>
 html,body{margin:0;padding:0;overflow:hidden;height:100%;background:#0f0f0f;color:#eee;font-family:sans-serif}
-#sidePanel{position:fixed;left:0;top:0;height:100%;width:260px;z-index:10;
-           background:rgba(18,18,18,0.95);border-right:1px solid #2a2a2a;
-           transition:transform .25s ease;overflow-y:auto;box-sizing:border-box;
-           padding:10px 14px 24px}
-#sidePanel.hidden{transform:translateX(-260px)}
-#toggleBtn{position:fixed;left:260px;top:50%;transform:translateY(-50%);z-index:11;
-           width:22px;height:52px;border:none;border-radius:0 6px 6px 0;
-           background:#2a2a2a;color:#aaa;font-size:16px;cursor:pointer;
-           transition:left .25s ease;padding:0;line-height:1}
-#toggleBtn.closed{left:0}
-.sec-label{font-size:10px;font-weight:700;letter-spacing:.08em;color:#666;
-           text-transform:uppercase;margin:14px 0 6px;padding:0}
-.sec-label:first-child{margin-top:2px}
-.ends{font-size:10px;color:#555}
-.tone-row{display:flex;align-items:center;gap:6px}
-#opacRange{flex:1;accent-color:#4da6ff;cursor:pointer}
-#opacVal{font-size:10px;color:#888;min-width:28px;text-align:right}
-#lockBtn{width:100%;padding:6px 0;border:none;border-radius:4px;font-size:13px;
-         font-weight:700;cursor:pointer;background:#3a3a3a;color:#ccc;
-         transition:background .18s,box-shadow .18s,color .18s;margin-top:6px}
-#lockBtn.on{background:#4da6ff;color:#000;box-shadow:0 0 10px #4da6ffaa}
-.mode-row{display:flex;gap:6px;margin-bottom:8px}
-.mode-btn{flex:1;padding:4px 0;border:1px solid #444;border-radius:4px;font-size:11px;
-          font-weight:700;cursor:pointer;background:#2a2a2a;color:#aaa;
-          transition:background .15s,color .15s}
-.mode-btn.on{background:#555;color:#fff;border-color:#888}
-#toneRange{flex:1;accent-color:#aaa;cursor:pointer}
-#toneVal{font-size:10px;color:#888;min-width:24px}
-#colorPick{width:100%;height:28px;border:none;border-radius:3px;cursor:pointer;padding:0}
-.modebar-container{display:none!important}
-.act-btn{width:100%;padding:6px 0;border:none;border-radius:4px;font-size:12px;
-         font-weight:700;cursor:pointer;background:#2a2a2a;color:#ccc;
-         margin-top:6px;transition:background .15s,color .15s}
-.act-btn:hover{background:#3a3a3a;color:#fff}
 </style>
-<div id="sidePanel">
-  <p class="sec-label">OPACIDADE</p>
-  <div class="tone-row">
-    <span class="ends">0</span>
-    <input type="range" id="opacRange" min="1" max="100" step="1" value="100">
-    <span class="ends">100</span>
-    <span id="opacVal">100%</span>
-  </div>
-  <button id="lockBtn">&#x1F512; LOCK</button>
-
-  <p class="sec-label">COR</p>
-  <div class="mode-row">
-    <button class="mode-btn on" id="modeGray">Cinza</button>
-    <button class="mode-btn" id="modeColor">Cor personalizada</button>
-  </div>
-  <div id="grayCtrl" class="tone-row">
-    <span class="ends">Escuro</span>
-    <input type="range" id="toneRange" min="0" max="255" step="1" value="235">
-    <span class="ends">Claro</span>
-    <span id="toneVal">235</span>
-  </div>
-  <div id="colorCtrl" style="display:none">
-    <input type="color" id="colorPick" value="#ebebeb">
-  </div>
-
-  <p class="sec-label">VISTA</p>
-  <button class="act-btn" id="resetViewBtn">&#x1F3E0; Resetar vista</button>
-  <button class="act-btn" id="downloadBtn">&#x1F4F7; Baixar imagem</button>
-</div>
-<button id="toggleBtn">&#x2039;</button>
 <script>
 (function(){
-  var locked=false,savedCamera=null,lockApplying=false;
-
-  function captureCamera(gd){
-    try{
-      var sc=gd._fullLayout&&gd._fullLayout.scene;
-      if(sc&&sc.camera) return JSON.parse(JSON.stringify(sc.camera));
-    }catch(e){}
-    return null;
-  }
+  var AP=__AP__;
+  var K='dcubic_stl_camera', KN='dcubic_stl_cmd_n';
+  var savedCamera=null, applying=false;
+  function ler(k){try{return localStorage.getItem(k);}catch(e){return null;}}
+  function gravar(k,v){try{localStorage.setItem(k,v);}catch(e){}}
 
   function init(){
     var gd=document.getElementById('stl_plot');
-    if(!gd||!gd._fullLayout){setTimeout(init,250);return;}
+    if(!gd||!gd._fullLayout){setTimeout(init,100);return;}
 
-    // ---- Toggle painel ----
-    var panel=document.getElementById('sidePanel');
-    var toggleBtn=document.getElementById('toggleBtn');
-    var panelOpen=true;
-    toggleBtn.addEventListener('click',function(){
-      panelOpen=!panelOpen;
-      if(panelOpen){
-        panel.classList.remove('hidden');
-        toggleBtn.innerHTML='&#x2039;';
-        toggleBtn.classList.remove('closed');
-      } else {
-        panel.classList.add('hidden');
-        toggleBtn.innerHTML='&#x203a;';
-        toggleBtn.classList.add('closed');
-      }
-    });
+    // ---- Opacidade / Cor (aplicadas a todas as malhas, como no painel antigo) ----
+    if(AP.opac!==null) Plotly.restyle(gd,{opacity:AP.opac/100,visible:AP.opac>0});
+    if(AP.cor!==null) Plotly.restyle(gd,{color:AP.cor});
 
-    // ---- Opacidade única ----
-    var opacRange=document.getElementById('opacRange');
-    var opacVal=document.getElementById('opacVal');
-    opacRange.addEventListener('input',function(){
-      opacVal.textContent=this.value+'%';
-      Plotly.restyle(gd,{opacity:this.value/100});
-    });
+    // ---- Câmera: comando novo (Vista/Resetar, por nonce) ou a salva no localStorage ----
+    var cam=null;
+    if(AP.cmd&&String(AP.cmd.n)!==ler(KN)){
+      cam=AP.cmd.cam; gravar(KN,String(AP.cmd.n)); gravar(K,JSON.stringify(cam));
+    } else {
+      try{var s=ler(K); if(s) cam=JSON.parse(s);}catch(e){}
+    }
+    savedCamera=cam;
+    var lay={'scene.dragmode':AP.lock?false:'orbit'};
+    if(cam) lay['scene.camera']=cam;
+    applying=true;
+    Plotly.relayout(gd,lay).then(function(){applying=false;});
 
-    // ---- Tom / Cor ----
-    var toneRange=document.getElementById('toneRange');
-    var colorPick=document.getElementById('colorPick');
-    var modeGray=document.getElementById('modeGray');
-    var modeColor=document.getElementById('modeColor');
-    var grayCtrl=document.getElementById('grayCtrl');
-    var colorCtrl=document.getElementById('colorCtrl');
-
-    function applyColor(c){Plotly.restyle(gd,{color:c});}
-
-    toneRange.addEventListener('input',function(){
-      document.getElementById('toneVal').textContent=this.value;
-      var v=this.value;
-      applyColor('rgb('+v+','+v+','+v+')');
-    });
-    colorPick.addEventListener('input',function(){applyColor(this.value);});
-
-    modeGray.addEventListener('click',function(){
-      modeGray.classList.add('on');modeColor.classList.remove('on');
-      grayCtrl.style.display='flex';colorCtrl.style.display='none';
-      var v=toneRange.value;applyColor('rgb('+v+','+v+','+v+')');
-    });
-    modeColor.addEventListener('click',function(){
-      modeColor.classList.add('on');modeGray.classList.remove('on');
-      colorCtrl.style.display='block';grayCtrl.style.display='none';
-      applyColor(colorPick.value);
-    });
-
-    // ---- LOCK ----
-    // Restaura câmera do localStorage ao iniciar
-    try{var _lsc=localStorage.getItem('dcubic_stl_camera');
-      if(_lsc) Plotly.relayout(gd,{'scene.camera':JSON.parse(_lsc)});
-    }catch(e){}
-
+    // ---- LOCK: câmera fixa; sem lock, cada movimento é salvo no localStorage ----
     gd.on('plotly_relayout',function(ev){
-      if(lockApplying) return;
-      if(locked&&savedCamera&&ev['scene.camera']){
-        lockApplying=true;
-        Plotly.relayout(gd,{'scene.camera':savedCamera}).then(function(){lockApplying=false;});
-      } else if(!locked&&ev['scene.camera']){
+      if(applying||!ev['scene.camera']) return;
+      if(AP.lock&&savedCamera){
+        applying=true;
+        Plotly.relayout(gd,{'scene.camera':savedCamera}).then(function(){applying=false;});
+      } else if(!AP.lock){
         savedCamera=JSON.parse(JSON.stringify(ev['scene.camera']));
-        try{localStorage.setItem('dcubic_stl_camera',JSON.stringify(savedCamera));}catch(e){}
-      }
-    });
-
-    // ---- Resetar vista ----
-    var _defaultCam={eye:{x:1.5,y:1.5,z:1.2},up:{x:0,y:0,z:1},center:{x:0,y:0,z:0}};
-    document.getElementById('resetViewBtn').addEventListener('click',function(){
-      locked=false;
-      var lb=document.getElementById('lockBtn');
-      lb.textContent='🔓 LOCK';
-      lb.classList.remove('on');
-      savedCamera=JSON.parse(JSON.stringify(_defaultCam));
-      try{localStorage.setItem('dcubic_stl_camera',JSON.stringify(_defaultCam));}catch(e){}
-      Plotly.relayout(gd,{'scene.dragmode':'orbit','scene.camera':_defaultCam});
-    });
-
-    // ---- Baixar imagem ----
-    document.getElementById('downloadBtn').addEventListener('click',function(){
-      Plotly.downloadImage(gd,{format:'png',width:1600,height:1200,filename:'modelo_stl'});
-    });
-
-    document.getElementById('lockBtn').addEventListener('click',function(){
-      locked=!locked;
-      if(locked){
-        savedCamera=captureCamera(gd)||savedCamera;
-        this.textContent='🔒 LOCK';
-        this.classList.add('on');
-      } else {
-        this.textContent='🔓 LOCK';
-        this.classList.remove('on');
-        Plotly.relayout(gd,{'scene.dragmode':'orbit'});
+        gravar(K,JSON.stringify(savedCamera));
       }
     });
   }
-  setTimeout(init,400);
+  setTimeout(init,100);
 })();
-</script>"""
+</script>""".replace("__AP__", json.dumps(_ap))
         _full_html = (
             "<!DOCTYPE html><html><head>"
             "<meta charset='utf-8'>"
