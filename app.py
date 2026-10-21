@@ -58,6 +58,21 @@ from modules import references
 from modules.mesh_loader import load_meshes
 from modules import slices as _slices
 
+
+
+@st.cache_resource(show_spinner=False)
+def _limpar_cache_na_partida():
+    """1x por processo do servidor: apaga do cache de envios (/tmp/dcubic_upload_cache) o que tem
+    mais de 2 dias. Falha na limpeza nunca impede o app de abrir."""
+    try:
+        from modules import stl_compactar as _c
+        return len(_c.limpar_cache_antigo(dias=2))
+    except Exception:
+        return 0
+
+
+_limpar_cache_na_partida()
+
 _MAX_VOXELS = 12_000_000  # ponytail: ajuste conforme RAM disponível (Streamlit Cloud ~1 GB)
 
 st.set_page_config(

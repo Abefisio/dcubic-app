@@ -34,3 +34,9 @@ env -u PYTHONDONTWRITEBYTECODE python3 -m streamlit run app.py --server.headless
 - Limitação conhecida: quem abre uma sessão nova a cada tentativa não é contido pelo contador (só pela espera de ~0,7 s por tentativa da biblioteca); um limite por IP exigiria um proxy na frente do app.
 - `.gitignore`: `auth/*` (inclui `users.yaml` e os backups `users.yaml.bak-*`, que antes só eram ignorados por `.git/info/exclude`, regra local a este clone), com exceção `!auth/*.template` para modelos.
 - E-mails de login reais trocados por `admin@exemplo.com` e `pesquisador@exemplo.com` em `.streamlit/secrets.toml.template`, `docs/DEPLOY-STREAMLIT.md` e `docs/DEPLOY-HUGGINGFACE.md`. Os e-mails antigos continuam no histórico do Git (repositório público); reescrever o histórico não foi feito.
+
+### Item 4 — Download do Drive e limpeza do cache
+
+- O download do Drive grava num arquivo temporário único (`tempfile.mkstemp`, `drive_<id>_<aleatório>.part`) em vez do nome fixo `drive_<id>.part`: dois usuários com o mesmo link não sobrescrevem mais um ao outro.
+- `limpar_cache_antigo()` roda 1 vez por processo do servidor (`st.cache_resource` em `app.py`): apaga arquivos com mais de 2 dias **somente dentro** da pasta de cache do app (`PASTA_CACHE` = `<tmp>/dcubic_upload_cache`) e as subpastas que ficarem vazias. Recusa qualquer pasta que não se chame `dcubic_upload_cache` (caminho vazio, raiz, home, `/tmp`) e não segue links.
+- Pendente (Dr. Abe, no painel do Streamlit Cloud): criar o secret `DCUBIC_MAX_DRIVE_MB = 1024`.

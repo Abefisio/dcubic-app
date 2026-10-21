@@ -27,6 +27,7 @@ import shutil
 import struct
 import sys
 import tempfile
+import time
 import zipfile
 
 import numpy as np
@@ -259,10 +260,11 @@ def baixar_do_drive(link: str, limite_mb: int = LIMITE_DRIVE_MB, pasta: str = PA
     destino_dir = os.path.join(pasta, "drive")
     os.makedirs(destino_dir, exist_ok=True)
     livre = shutil.disk_usage(destino_dir).free
-    bruto = os.path.join(destino_dir, f"drive_{fid[:8]}.part")
+    # nome único por importação: dois usuários com o mesmo link não gravam no mesmo arquivo
+    fd, bruto = tempfile.mkstemp(dir=destino_dir, prefix=f"drive_{fid[:8]}_", suffix=".part")
     p(0.0, "Baixando…")
     try:
-        with open(bruto, "wb") as f:
+        with os.fdopen(fd, "wb") as f:
             gdown.download(f"https://drive.google.com/uc?id={fid}",
                            _GravadorLimitado(f, limite_mb * 1024 ** 2, livre, p), quiet=True)
     except Exception as e:
@@ -304,6 +306,35 @@ def receber_baixado(caminho: str, pasta: str = PASTA_CACHE, progresso=None):
     finally:
         if meu:
             _apagar(caminho)
+
+
+def limpar_cache_antigo(pasta: str = PASTA_CACHE, dias: float = 2) -> list:
+    """Apaga arquivos com mais de `dias` dias DENTRO da pasta de cache do app (e as subpastas que
+    ficarem vazias); a própria pasta fica. Recusa qualquer pasta que não se chame
+    dcubic_upload_cache (protege contra caminho vazio, raiz, home, /tmp). Não segue links. -> apagados."""
+    real = os.path.realpath(pasta) if pasta else ""
+    if not pasta or os.path.basename(real) != os.path.basename(PASTA_CACHE) or real == os.path.dirname(real):
+        raise ValueError(f"Limpeza recusada: {pasta!r} não é a pasta de cache do app.")
+    if not os.path.isdir(real):
+        return []
+    limite = time.time() - dias * 86400
+    apagados = []
+    for raiz, subpastas, arquivos in os.walk(real, topdown=False):
+        for nome in arquivos:
+            cam = os.path.join(raiz, nome)
+            try:
+                if os.lstat(cam).st_mtime < limite:
+                    os.remove(cam)
+                    apagados.append(cam)
+            except OSError:
+                pass   # em uso / já apagado por outra sessão
+        if raiz != real:
+            try:
+                os.rmdir(raiz)   # só apaga se vazia
+                apagados.append(raiz)
+            except OSError:
+                pass
+    return apagados
 
 
 def processar_recebidos(recebidos, pasta: str = PASTA_CACHE, progresso=None):
