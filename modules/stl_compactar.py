@@ -27,6 +27,7 @@ import shutil
 import struct
 import sys
 import tempfile
+import zlib
 import time
 import zipfile
 
@@ -359,6 +360,14 @@ def receber_parte(estado, valor, limite_mb: int = LIMITE_DRIVE_MB, pasta: str = 
         return estado, None
     try:
         if cab["ini"] == estado["n"]:
+            if cab.get("gz"):   # fatia compactada (gzip) no navegador: STL encolhe ~6×, o envio fica mais rápido
+                z = zlib.decompressobj(31)
+                try:
+                    dados = z.decompress(dados, 64 * 1024 ** 2)   # teto contra "gzip-bomba" (a fatia tem 16 MB)
+                except zlib.error:
+                    z = None
+                if not z or z.unconsumed_tail or not z.eof:
+                    raise ValueError("O envio recebeu uma parte compactada inválida. Tente importar de novo.")
             fim = estado["n"] + len(dados)
             if fim > estado["total"]:
                 raise ValueError("O envio recebeu mais dados do que o tamanho do arquivo.")
@@ -664,9 +673,13 @@ if __name__ == "__main__":
     with open(r[0]["caminho"], "rb") as a:
         cubo_bin = a.read()   # 84 + 12 × 50 = 684 bytes
 
-    def fatia(id_, ini, dados, nome="dente.stl", total=len(cubo_bin)):
-        c = json.dumps({"id": id_, "nome": nome, "total": total, "ini": ini}).encode()
-        return len(c).to_bytes(4, "little") + c + dados
+    def fatia(id_, ini, dados, nome="dente.stl", total=len(cubo_bin), gz=False):
+        c = json.dumps({"id": id_, "nome": nome, "total": total, "ini": ini, "gz": gz}).encode()
+        return len(c).to_bytes(4, "little") + c + (_gzip(dados) if gz else dados)
+
+    def _gzip(b):
+        z = zlib.compressobj(6, zlib.DEFLATED, 31)
+        return z.compress(b) + z.flush()
 
     def parts():
         return [x for x in os.listdir(os.path.join(d, "drive")) if x.startswith("envio_")]
@@ -714,4 +727,16 @@ if __name__ == "__main__":
     assert receber_parte(est, len(c).to_bytes(4, "little") + c + cubo_bin, pasta=d) == (est, None)
     est, rec2 = receber_parte(est, fatia("i", 0, cubo_bin, nome="Canal.stl"), pasta=d)
     assert est["ultimo"] is True and rec2[0][0] == "Canal.stl" and not parts()
+    # Fatias compactadas (gzip) pelo navegador: o "ack" conta bytes do arquivo original.
+    est, rec = receber_parte(None, fatia("j", 0, cubo_bin[:300], gz=True), pasta=d)
+    assert est["n"] == 300 and rec is None
+    est, rec = receber_parte(est, fatia("j", 300, cubo_bin[300:], gz=True), pasta=d)
+    assert rec and rec[0][3] == len(cubo_bin) and not parts()
+    est, _ = receber_parte(None, fatia("k", 0, cubo_bin[:100]), pasta=d)
+    ruim = fatia("k", 100, cubo_bin[100:200], gz=True)
+    try:   # gzip corrompido (cortado) é recusado e o .part apagado
+        receber_parte(est, ruim[:-10], pasta=d)
+        raise AssertionError("gzip inválido aceito")
+    except ValueError:
+        assert not parts()
     print("envio em partes OK")
