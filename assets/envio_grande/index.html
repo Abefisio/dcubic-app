@@ -47,7 +47,7 @@
   <button id="limpar" type="button">Cancelar</button>
 </div>
 <div id="andamento" class="oculto">
-  <div id="aviso" class="loading" role="status">Loading… enviando</div>
+  <div id="aviso" class="loading" role="status">Loading…</div>
   <div class="rotulo" id="rot_arq"></div>
   <progress id="barra" max="1" value="0"></progress>
   <div class="rotulo" id="rot_total"></div>
@@ -56,8 +56,10 @@
 </div>
 <div id="txt"></div>
 <script>
-// 8 MB por mensagem do WebSocket (server.maxMessageSize do Streamlit = 200 MB): margem de 25 vezes.
-const PARTE = 8 * 1024 * 1024;
+// 16 MB do arquivo por mensagem (server.maxMessageSize do Streamlit = 200 MB): margem de 12 vezes.
+// O .stl vai compactado (gzip nativo do navegador, ~6× menor); o .zip já é compactado e vai como está.
+const PARTE = 16 * 1024 * 1024;
+const GZ = typeof CompressionStream === "function";
 const MB = 1024 * 1024;
 let lote = null;       // {arqs, i (arquivo atual), feitos (bytes dos anteriores), total}
 let envio = null;      // arquivo atual: {id, arq, ultimo, ini (fatia em voo), k (nº da tentativa), t (cão de guarda)}
@@ -87,16 +89,28 @@ function progresso(e, fim) {
   $("barra_total").classList.toggle("oculto", n < 2);
 }
 
+// lê (e compacta) a fatia que começa em ini; devolve uma promessa
+function preparar(e, ini) {
+  const pedaco = e.arq.slice(ini, Math.min(ini + PARTE, e.arq.size));
+  const gz = GZ && !/\.zip$/i.test(e.arq.name);
+  const p = gz ? new Response(pedaco.stream().pipeThrough(new CompressionStream("gzip"))).arrayBuffer()
+               : pedaco.arrayBuffer();
+  return p.then((b) => ({ini, gz, dados: new Uint8Array(b)}));
+}
+
 async function mandar(ini) {
   const e = envio;
   e.ini = ini;
   clearTimeout(e.t);
   const fim = Math.min(ini + PARTE, e.arq.size);
   progresso(e, ini);
-  const dados = new Uint8Array(await e.arq.slice(ini, fim).arrayBuffer());
+  // a próxima fatia já foi lida/compactada enquanto a anterior viajava: aproveita
+  const pronta = e.prox && e.prox.ini === ini ? e.prox.p : preparar(e, ini);
+  e.prox = fim < e.arq.size ? {ini: fim, p: preparar(e, fim)} : null;
+  const {gz, dados} = await pronta;
   if (envio !== e) return;   // cancelado enquanto lia o disco
   const cab = new TextEncoder().encode(JSON.stringify(
-    {id: e.id, nome: e.arq.name, total: e.arq.size, ini, ultimo: e.ultimo, k: ++e.k}));   // k: cada envio é um valor novo
+    {id: e.id, nome: e.arq.name, total: e.arq.size, ini, gz, ultimo: e.ultimo, k: ++e.k}));   // k: cada envio é um valor novo
   const msg = new Uint8Array(4 + cab.length + dados.length);
   new DataView(msg.buffer).setUint32(0, cab.length, true);
   msg.set(cab, 4);
@@ -104,7 +118,7 @@ async function mandar(ini) {
   falar("streamlit:setComponentValue", {value: msg, dataType: "bytes"});
   progresso(e, fim);
   // o "Loading…" fica piscando até o servidor terminar: o quadro é trocado quando o dente abre
-  $("aviso").textContent = fim >= e.arq.size && e.ultimo ? "Loading… preparando o arquivo no servidor" : "Loading… enviando";
+  $("aviso").textContent = fim >= e.arq.size && e.ultimo ? "Loading… preparando o arquivo no servidor" : "Loading…";
   // ponytail: sem resposta em 60 s, reenvia a mesma fatia (o Python ignora repetidas)
   e.t = setTimeout(() => envio === e && e.ini === ini && mandar(ini), 60000);
 }
@@ -135,7 +149,7 @@ $("importar").addEventListener("click", () => {
   if (!pend || lote) return;
   lote = {arqs: pend, i: -1, feitos: 0, total: pend.reduce((s, a) => s + a.size, 0)};
   pend = null;
-  $("aviso").textContent = "Loading… enviando";
+  $("aviso").textContent = "Loading…";
   mostrar("andamento");
   proximo();
 });

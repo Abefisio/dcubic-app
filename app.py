@@ -405,7 +405,7 @@ st.sidebar.subheader("Enviar STL")
 _LIMITE_DRIVE_MB = int(_segredo("DCUBIC_MAX_DRIVE_MB") or 2048)  # envio em partes e Drive
 
 # Seletor ÚNICO (arrastar ou escolher, vários arquivos): o componente (assets/envio_grande) lê cada
-# arquivo com File.slice no navegador e manda fatias de 8 MB, uma por vez; cada fatia é anexada a um
+# arquivo com File.slice no navegador e manda fatias de 16 MB (o .stl compactado em gzip), uma por vez; cada fatia é anexada a um
 # .part em disco (stl_compactar.receber_parte). Os arquivos vão um após o outro e, no fim do último,
 # o conjunto segue a MESMA etapa 2 do Drive. O seletor nativo do Streamlit foi retirado: segurava o
 # arquivo inteiro na RAM (880 MiB -> pico de ~3 GB) e recusava acima de 200 MB com mensagem em inglês.
