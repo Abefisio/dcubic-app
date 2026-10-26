@@ -208,3 +208,45 @@ triângulos (canal 311.303, sem redução), pico 283 MB. Pós-download com molar
 
 **Condição para manter a decisão:** nenhuma senha, token ou dado de paciente pode entrar em commit.
 Rever esta decisão se o plano do Cloud mudar ou se o app passar a usar dados sensíveis no repositório.
+
+## Envio de arquivo grande em partes (26/10/2026)
+
+**Pedido:** abrir STL de mais de 800 MB enviados direto do computador (PC ou Mac), no Streamlit Cloud.
+
+**Por que não subir `maxUploadSize`:** o seletor nativo do Streamlit 1.50 recebe o arquivo inteiro na
+RAM antes do app rodar. Medido com o handler real do Streamlit e um STL de 880 MiB: pico de 2.972 MB
+de RSS (macOS) e 4.406 MB de alocação Python; o Cloud documenta no máximo 2,7 GB por app
+(https://docs.streamlit.io/deploy/streamlit-community-cloud/manage-your-app). Teto prático do seletor
+no Cloud: ~300 MB. `maxUploadSize` continua 200 (config.toml e secret `DCUBIC_MAX_UPLOAD_MB`).
+
+**Por que não Cloudflare R2 agora:** resolveria com pico baixo, mas exige criar conta, bucket, chaves e
+CORS, e uma dependência nova (boto3). O envio em partes pelo próprio Streamlit resolve sem conta externa.
+R2 fica como opção se o envio em partes ficar lento demais na rede do usuário.
+
+**Como funciona:**
+- Barra lateral, abaixo do seletor nativo: "Arquivo grande (até `DCUBIC_MAX_DRIVE_MB` MB)? Enviar do
+  computador" (1024 MB no Cloud). Componente próprio sem build em `assets/envio_grande/index.html`
+  (`declare_component`, protocolo de componentes v1 por postMessage; não há `st.components.v2` no 1.50).
+- O navegador lê o arquivo com `File.slice` e manda fatias de 8 MB como bytes (`dataType: "bytes"`),
+  uma por vez, com cabeçalho JSON {id, nome, total, ini}. Mensagem do WebSocket: ~8,4 MB, contra
+  `server.maxMessageSize` = 200 MB (margem de ~25 vezes).
+- `stl_compactar.receber_parte` (callback do componente, dentro de `@st.fragment`: cada fatia reexecuta
+  só o fragmento) anexa a fatia a `<cache>/drive/envio_*.part` (nome único por `tempfile`), só se ela
+  começa no byte esperado (repetida é ignorada; fora de ordem, o navegador reenvia a partir do "ack").
+  Limite (`DCUBIC_MAX_DRIVE_MB`) e disco (`FATOR_DISCO` = 2,5) usam a mesma checagem do Drive
+  (`_checar_limite`), já no tamanho declarado e a cada fatia.
+- Arquivo completo: `receber_baixado` (mesma validação e cópia para `recebidos/` do Drive) e a mesma
+  etapa 2 (`_upl_recebidos` -> `processar_recebidos`). Um .stl único mantém o nome original.
+- Fim, erro ou Cancelar: o .part é apagado, a chave do componente muda (a última fatia sai do estado do
+  navegador; os reruns seguintes voltam a ~1,6 KB) e o app roda de novo (`st.rerun(scope="app")`).
+- Legenda do seletor: "Até 200 MB: use o seletor acima. Maior que isso: use \"Enviar do computador\" logo
+  abaixo (ou o link do Google Drive)." O seletor nativo e o Drive continuam como estavam.
+
+**Testes (26/10/2026, macOS, servidor de teste sem `--server.maxUploadSize`, ou seja 200 MB como no Cloud):**
+STL sintético de 880 MiB (922.746.834 B, 18.454.935 triângulos) enviado pelo Chrome: 110 fatias em
+12,6 s, aberto no 3D em 23,7 s (reduzido para 305.795 triângulos), aba Cortes sem exceção; pico de RSS do
+servidor 558 MB (seletor nativo: 2.972 MB). Cancelar no meio apaga o .part. Autoverificação em
+`python modules/stl_compactar.py` (ordem, repetida, adiantada, limite, disco, cancelamento, conclusão).
+
+**Limitações:** a velocidade depende do upload do usuário (cada fatia espera a confirmação do servidor);
+fechar a aba no meio deixa um .part, apagado pela limpeza de 2 dias do cache.

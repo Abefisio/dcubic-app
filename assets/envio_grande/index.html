@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<!-- Componente "Arquivo grande? Enviar do computador" (app.py). Sem build: fala direto o protocolo
+     de componentes do Streamlit (postMessage). Lê o arquivo em fatias com File.slice e manda UMA por
+     vez; só manda a seguinte quando o Python devolve o "ack" (próximo byte esperado) nos args. -->
+<style>
+  body { margin: 0; font: 14px sans-serif; color: var(--texto, #e6edf6); background: transparent; }
+  label.botao, button { display: inline-block; padding: 6px 12px; border-radius: 8px; cursor: pointer;
+    border: 1px solid rgba(250, 250, 250, .2); background: transparent; color: inherit; font: inherit; }
+  label.botao:hover, button:hover { border-color: var(--destaque, #00c2c9); color: var(--destaque, #00c2c9); }
+  input[type=file] { position: absolute; width: 1px; height: 1px; opacity: 0; }
+  progress { width: 100%; height: 10px; accent-color: var(--destaque, #00c2c9); }
+  #txt { margin: 6px 0; font-size: 13px; opacity: .85; }
+  .oculto { display: none; }
+</style>
+</head>
+<body>
+<label class="botao" id="escolher">Escolher arquivo (.stl ou .zip)
+  <input type="file" id="arq" accept=".stl,.zip">
+</label>
+<div id="andamento" class="oculto">
+  <progress id="barra" max="1" value="0"></progress>
+  <button id="cancelar" type="button">Cancelar</button>
+</div>
+<div id="txt"></div>
+<script>
+// 8 MB por mensagem do WebSocket (server.maxMessageSize do Streamlit = 200 MB): margem de 25 vezes.
+const PARTE = 8 * 1024 * 1024;
+const MB = 1024 * 1024;
+let envio = null;      // {id, arq, ini (fatia em voo), k (nº da tentativa), t (cão de guarda)}
+let limiteMb = 0;
+const $ = (id) => document.getElementById(id);
+
+function falar(type, extra) { window.parent.postMessage({isStreamlitMessage: true, type, ...extra}, "*"); }
+function altura() { falar("streamlit:setFrameHeight", {height: document.body.scrollHeight + 4}); }
+function texto(t) { $("txt").textContent = t; altura(); }
+function emAndamento(sim) {
+  $("andamento").classList.toggle("oculto", !sim);
+  $("escolher").classList.toggle("oculto", sim);
+  altura();
+}
+
+async function mandar(ini) {
+  const e = envio;
+  e.ini = ini;
+  clearTimeout(e.t);
+  const fim = Math.min(ini + PARTE, e.arq.size);
+  const dados = new Uint8Array(await e.arq.slice(ini, fim).arrayBuffer());
+  if (envio !== e) return;   // cancelado enquanto lia o disco
+  const cab = new TextEncoder().encode(JSON.stringify(
+    {id: e.id, nome: e.arq.name, total: e.arq.size, ini, k: ++e.k}));   // k: cada envio é um valor novo
+  const msg = new Uint8Array(4 + cab.length + dados.length);
+  new DataView(msg.buffer).setUint32(0, cab.length, true);
+  msg.set(cab, 4);
+  msg.set(dados, 4 + cab.length);
+  falar("streamlit:setComponentValue", {value: msg, dataType: "bytes"});
+  $("barra").value = fim / Math.max(e.arq.size, 1);
+  texto(fim >= e.arq.size
+    ? "Arquivo enviado. Preparando no servidor…"
+    : `Enviando… ${(ini / MB).toFixed(0)} de ${(e.arq.size / MB).toFixed(0)} MB (${(100 * ini / Math.max(e.arq.size, 1)).toFixed(0)}%)`);
+  // ponytail: sem resposta em 60 s, reenvia a mesma fatia (o Python ignora repetidas)
+  e.t = setTimeout(() => envio === e && e.ini === ini && mandar(ini), 60000);
+}
+
+$("arq").addEventListener("change", () => {
+  const arq = $("arq").files[0];
+  $("arq").value = "";
+  if (!arq) return;
+  if (!/\.(stl|zip)$/i.test(arq.name)) return texto("Escolha um arquivo .stl ou .zip.");
+  if (limiteMb && arq.size > limiteMb * MB)
+    return texto(`O arquivo tem ${(arq.size / MB).toFixed(0)} MB e passa do limite de ${limiteMb} MB.`);
+  envio = {id: Math.random().toString(36).slice(2) + Date.now().toString(36), arq, ini: -1, k: 0, t: 0};
+  emAndamento(true);
+  mandar(0);
+});
+
+$("cancelar").addEventListener("click", () => {
+  if (!envio) return;
+  clearTimeout(envio.t);
+  falar("streamlit:setComponentValue", {value: {cancelar: envio.id}, dataType: "json"});
+  envio = null;
+  emAndamento(false);
+  texto("Envio cancelado.");
+});
+
+window.addEventListener("message", (ev) => {
+  if (ev.data.type !== "streamlit:render") return;
+  const a = ev.data.args || {}, tema = ev.data.theme;
+  if (tema) {
+    document.body.style.setProperty("--texto", tema.textColor);
+    document.body.style.setProperty("--destaque", tema.primaryColor);
+  }
+  limiteMb = a.limite_mb || 0;
+  // ack = próximo byte que o Python espera; igual à fatia em voo = ainda não processada (espera)
+  if (envio && a.id === envio.id && a.ack !== envio.ini && a.ack < envio.arq.size) mandar(a.ack);
+  altura();
+});
+
+falar("streamlit:componentReady", {apiVersion: 1});
+altura();
+</script>
+</body>
+</html>
