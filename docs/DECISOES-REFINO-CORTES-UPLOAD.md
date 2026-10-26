@@ -250,3 +250,51 @@ servidor 558 MB (seletor nativo: 2.972 MB). Cancelar no meio apaga o .part. Auto
 
 **Limitações:** a velocidade depende do upload do usuário (cada fatia espera a confirmação do servidor);
 fechar a aba no meio deixa um .part, apagado pela limpeza de 2 dias do cache.
+
+## Seletor único de envio (26/10/2026)
+
+**Motivo:** na produção, o Dr. Abe arrastou `Dentina.stl` (> 200 MB) para o seletor nativo do Streamlit (o
+primeiro da barra lateral) e recebeu "File must be 200.0MB or smaller." — mensagem em inglês, gerada no
+navegador, que o Python não consegue traduzir nem detectar. O bloco "Enviar do computador", mais abaixo,
+passava despercebido. Dois seletores para a mesma tarefa eram um problema de usabilidade.
+
+**Decisão:** o componente de envio em partes (`assets/envio_grande/index.html`) passa a ser o seletor
+ÚNICO de "Enviar STL"; o `st.file_uploader` nativo foi retirado da barra lateral.
+- Área "Arraste os arquivos aqui ou clique para escolher": arrastar e soltar + clique, `.stl` e `.zip`,
+  vários arquivos de uma vez (estruturas do mesmo dente). Soltar em qualquer ponto do quadro do componente
+  é aceito (o navegador não abre o arquivo).
+- Recusa no navegador, antes de enviar: extensão diferente de .stl/.zip e arquivo acima de
+  `DCUBIC_MAX_DRIVE_MB` (1024 MB no Cloud), com mensagem em português. O servidor repete as checagens.
+- Vários arquivos vão um após o outro, cada um em fatias de 8 MB (mesmo protocolo). O cabeçalho ganhou
+  `ultimo` (ausente = True); quando um arquivo que não é o último termina, `receber_parte` devolve o
+  "ack" = tamanho total e o navegador começa o próximo. O app junta os recebidos em `_eg_lote` e, no fim
+  do último, entrega o conjunto à mesma etapa 2 (`_upl_recebidos` -> `processar_recebidos`), como o
+  seletor nativo fazia (grade de redução comum a todas as estruturas).
+- `receber_parte` marca o arquivo completo (`feito`): uma fatia repetida depois do fim é ignorada.
+- Erro em qualquer arquivo ou Cancelar no meio do lote: apaga o .part em curso e os arquivos do lote já
+  recebidos (`_apagar_lote`).
+- Progresso por arquivo ("Arquivo 1 de 2: … — X de Y MB") e total ("Total: X de Y MB (Z%)"); botão Cancelar.
+- Legenda: "Arraste ou escolha os arquivos .stl/.zip do mesmo dente (até 1024 MB cada). Malhas acima de
+  500.000 triângulos são reduzidas automaticamente." O link do Google Drive continua como alternativa
+  ("Ou cole o link do Google Drive").
+- Removidos do app: `_limite_envio_mb`, o rebaixamento de `server.maxUploadSize` em tempo de execução,
+  `_liberar_envios` e a etapa 1 do seletor nativo. `DCUBIC_MAX_UPLOAD_MB` deixa de ser lido (o secret pode
+  ficar; não tem efeito). `maxUploadSize = 200` continua no `config.toml`: sem seletor nativo, só limita o
+  endpoint HTTP de upload do Streamlit (quanto menor, melhor). No Mac, `--server.maxUploadSize 2048` deixa
+  de ser necessário.
+
+**Por que não manter o seletor nativo para arquivos pequenos:** ele é o que o usuário encontra primeiro e
+recusa acima de 200 MB com mensagem em inglês; o componente cobre arquivos pequenos e grandes com o mesmo
+gesto e usa menos memória.
+
+**Testes (26/10/2026, macOS, Chrome, servidor de teste sem `--server.maxUploadSize`, como o Cloud):**
+pequeno escolhido e arrastado abre no 3D; dois arquivos de uma vez viram duas estruturas do mesmo dente;
+.zip com duas estruturas; .stl inválido, extensão errada e arquivo de 1032 MB recusados; Cancelar
+(arquivo único e no meio de um lote) apaga o .part e os já recebidos; STL sintético de 880 MiB enviado
+em 111 fatias (~9,3 s), aberto em ~19,5 s, 3D e Cortes sem exceção, pico de RSS 565 MB. Relatório em
+`~/Desktop/RELATORIOS-CLAUDE/envio-unico.txt`.
+
+**Achado fora do escopo (não corrigido):** um STL sintético muito ruidoso (esfera com 2% de ruído por
+vértice), depois de reduzido, fez a aba Cortes falhar com `ValueError: unable to recover polygon!`
+(trimesh, em `slices.gerar_corte`). Não depende do envio: o arquivo chega idêntico (SHA-1 conferido) e
+segue o mesmo processamento do Drive. Com ruído de 0,2% a aba Cortes funcionou.
