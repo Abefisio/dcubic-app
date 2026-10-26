@@ -342,7 +342,7 @@ def cancelar_envio(estado) -> None:
 
 def receber_parte(estado, valor, limite_mb: int = LIMITE_DRIVE_MB, pasta: str = PASTA_CACHE, progresso=None):
     """Uma fatia do componente. valor = 4 bytes (tamanho do cabeçalho, little-endian) + cabeçalho JSON
-    {id, nome, total, ini} + dados. estado = envio em andamento (ou None).
+    {id, nome, total, ini, ultimo} + dados. estado = envio em andamento (ou None).
     Só grava a fatia que começa em estado['n']: repetida (rerun) é ignorada e, fora de ordem, o
     navegador reenvia a partir de estado['n'] (o "ack"). Arquivo completo -> receber_baixado (mesma
     validação e cópia para recebidos/ do Drive). Em erro apaga o .part e repassa o erro.
@@ -352,7 +352,11 @@ def receber_parte(estado, valor, limite_mb: int = LIMITE_DRIVE_MB, pasta: str = 
     dados = memoryview(valor)[4 + tam:]
     if not estado or estado["id"] != cab["id"]:   # envio novo: o anterior, se houver, é abandonado
         cancelar_envio(estado)
-        estado = dict(iniciar_envio(cab["nome"], cab["total"], limite_mb, pasta), id=cab["id"])
+        # ultimo: False nos arquivos que não são o último de um envio com vários (o app junta o lote)
+        estado = dict(iniciar_envio(cab["nome"], cab["total"], limite_mb, pasta), id=cab["id"],
+                      ultimo=cab.get("ultimo", True))
+    if estado.get("feito"):   # fatia repetida de um arquivo já completo (lote com vários)
+        return estado, None
     try:
         if cab["ini"] == estado["n"]:
             fim = estado["n"] + len(dados)
@@ -368,6 +372,7 @@ def receber_parte(estado, valor, limite_mb: int = LIMITE_DRIVE_MB, pasta: str = 
     except BaseException:
         cancelar_envio(estado)
         raise
+    estado["feito"] = True
     if len(rec) == 1 and estado["nome"].lower().endswith(".stl"):   # .stl único: mantém o nome original
         rec = [(estado["nome"], *rec[0][1:])]
     return estado, rec
@@ -701,4 +706,12 @@ if __name__ == "__main__":
         raise AssertionError("HTML aceito")
     except ValueError:
         assert not parts()
+    # Vários arquivos (seletor único): "ultimo" vem do cabeçalho (ausente = True); fatia repetida de um
+    # arquivo já completo é ignorada (não chama receber_baixado de novo sobre o .part apagado).
+    c = json.dumps({"id": "h", "nome": "Dentina.stl", "total": len(cubo_bin), "ini": 0, "ultimo": False}).encode()
+    est, rec = receber_parte(None, len(c).to_bytes(4, "little") + c + cubo_bin, pasta=d)
+    assert est["ultimo"] is False and est["feito"] and rec[0][0] == "Dentina.stl"
+    assert receber_parte(est, len(c).to_bytes(4, "little") + c + cubo_bin, pasta=d) == (est, None)
+    est, rec2 = receber_parte(est, fatia("i", 0, cubo_bin, nome="Canal.stl"), pasta=d)
+    assert est["ultimo"] is True and rec2[0][0] == "Canal.stl" and not parts()
     print("envio em partes OK")
