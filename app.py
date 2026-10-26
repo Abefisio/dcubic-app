@@ -493,6 +493,14 @@ if st.sidebar.button("Importar do Drive", key="drive_importar") and _link_drive.
 if "_upl_recebidos" in st.session_state:
     from modules import stl_compactar as _cmp
     _recebidos = st.session_state.pop("_upl_recebidos")
+    # "Loading…" piscando (mesma animação do componente; fixo se a pessoa pede menos movimento)
+    # até o dente abrir: o st.rerun() abaixo apaga o aviso.
+    st.sidebar.markdown(
+        "<style>@keyframes dc-pisca{50%{opacity:.2}}"
+        ".dc-loading{font-weight:700;color:#00c2c9;animation:dc-pisca 1s ease-in-out infinite}"
+        "@media (prefers-reduced-motion:reduce){.dc-loading{animation:none}}</style>"
+        "<div class='dc-loading' role='status'>Loading… preparando o arquivo no servidor</div>",
+        unsafe_allow_html=True)
     _barra = st.sidebar.progress(0.1, text="Preparando a malha…")
     try:
         # Libera o dente anterior antes de compactar (pico de memória menor)

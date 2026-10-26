@@ -5,7 +5,9 @@
 <!-- Seletor único "Enviar STL" (app.py): arrastar ou clicar, um ou vários arquivos .stl/.zip. Sem build:
      fala direto o protocolo de componentes do Streamlit (postMessage). Lê cada arquivo em fatias com
      File.slice e manda UMA por vez; só manda a seguinte quando o Python devolve o "ack" (próximo byte
-     esperado) nos args. Vários arquivos vão um após o outro; ack = tamanho total libera o próximo. -->
+     esperado) nos args. Vários arquivos vão um após o outro; ack = tamanho total libera o próximo.
+     Fluxo: escolher/arrastar -> lista dos arquivos + botão "Importar" -> só então começa o envio, com o
+     aviso "Loading…" piscando (e o texto de progresso) até o servidor terminar. -->
 <style>
   body { margin: 0; font: 14px sans-serif; color: var(--texto, #e6edf6); background: transparent; }
   #zona { display: block; box-sizing: border-box; padding: 18px 12px; border-radius: 8px; cursor: pointer;
@@ -18,6 +20,14 @@
   button:hover { border-color: var(--destaque, #00c2c9); color: var(--destaque, #00c2c9); }
   input[type=file] { position: absolute; width: 1px; height: 1px; opacity: 0; }
   progress { width: 100%; height: 10px; accent-color: var(--destaque, #00c2c9); }
+  button.primario { display: block; width: 100%; padding: 10px 12px; font-weight: 700; font-size: 15px;
+    background: var(--destaque, #00c2c9); border-color: var(--destaque, #00c2c9); color: #06242a; }
+  button.primario:hover { filter: brightness(1.1); color: #06242a; }
+  #itens { margin: 6px 0 2px; padding-left: 18px; font-size: 13px; }
+  #soma { font-size: 12px; opacity: .85; }
+  .loading { font-weight: 700; color: var(--destaque, #00c2c9); animation: pisca 1s ease-in-out infinite; }
+  @keyframes pisca { 50% { opacity: .2; } }
+  @media (prefers-reduced-motion: reduce) { .loading { animation: none; } }   /* aviso fixo, sem piscar */
   .rotulo { margin: 4px 0 2px; font-size: 12px; opacity: .85; }
   #txt { margin: 6px 0; font-size: 13px; opacity: .85; }
   .oculto { display: none !important; }
@@ -29,7 +39,15 @@
   <small>.stl ou .zip — um ou vários de uma vez</small>
   <input type="file" id="arq" accept=".stl,.zip" multiple>
 </label>
+<div id="lista" class="oculto">
+  <b>Arquivos escolhidos</b>
+  <ul id="itens"></ul>
+  <div id="soma"></div>
+  <button id="importar" type="button" class="primario">Importar</button>
+  <button id="limpar" type="button">Cancelar</button>
+</div>
 <div id="andamento" class="oculto">
+  <div id="aviso" class="loading" role="status">Loading… enviando</div>
   <div class="rotulo" id="rot_arq"></div>
   <progress id="barra" max="1" value="0"></progress>
   <div class="rotulo" id="rot_total"></div>
@@ -43,17 +61,30 @@ const PARTE = 8 * 1024 * 1024;
 const MB = 1024 * 1024;
 let lote = null;       // {arqs, i (arquivo atual), feitos (bytes dos anteriores), total}
 let envio = null;      // arquivo atual: {id, arq, ultimo, ini (fatia em voo), k (nº da tentativa), t (cão de guarda)}
+let pend = null;       // arquivos escolhidos que esperam o clique em "Importar"
 let limiteMb = 0;
 const $ = (id) => document.getElementById(id);
-const mb = (b) => (b / MB).toFixed(0);
+const mb = (b) => (b / MB).toFixed(b < 10 * MB ? 1 : 0).replace(".", ",");
 
 function falar(type, extra) { window.parent.postMessage({isStreamlitMessage: true, type, ...extra}, "*"); }
 function altura() { falar("streamlit:setFrameHeight", {height: document.body.scrollHeight + 4}); }
 function texto(t) { $("txt").textContent = t; altura(); }
-function emAndamento(sim) {
-  $("andamento").classList.toggle("oculto", !sim);
-  $("zona").classList.toggle("oculto", sim);
+function mostrar(qual) {   // "zona" (escolher), "lista" (conferir e Importar) ou "andamento" (enviando)
+  for (const id of ["zona", "lista", "andamento"]) $(id).classList.toggle("oculto", id !== qual);
   altura();
+}
+// altura do quadro sempre acompanha o conteúdo (texto que quebra linha não pode ficar cortado)
+new ResizeObserver(altura).observe(document.body);
+// nome e andamento do arquivo atual (e do total); chamado ANTES de ler a 1ª fatia: nunca fica em branco
+function progresso(e, fim) {
+  const n = lote.arqs.length, feito = lote.feitos + fim, tam = Math.max(e.arq.size, 1);
+  $("barra").value = fim / tam;
+  $("barra_total").value = feito / Math.max(lote.total, 1);
+  $("rot_arq").textContent = `${n > 1 ? `Arquivo ${lote.i + 1} de ${n} — ` : ""}Enviando ${e.arq.name}: ` +
+    `${mb(fim)} de ${mb(e.arq.size)} MB (${(100 * fim / tam).toFixed(0)}%)`;
+  $("rot_total").textContent = `Total: ${mb(feito)} de ${mb(lote.total)} MB (${(100 * feito / Math.max(lote.total, 1)).toFixed(0)}%)`;
+  $("rot_total").classList.toggle("oculto", n < 2);
+  $("barra_total").classList.toggle("oculto", n < 2);
 }
 
 async function mandar(ini) {
@@ -61,6 +92,7 @@ async function mandar(ini) {
   e.ini = ini;
   clearTimeout(e.t);
   const fim = Math.min(ini + PARTE, e.arq.size);
+  progresso(e, ini);
   const dados = new Uint8Array(await e.arq.slice(ini, fim).arrayBuffer());
   if (envio !== e) return;   // cancelado enquanto lia o disco
   const cab = new TextEncoder().encode(JSON.stringify(
@@ -70,12 +102,9 @@ async function mandar(ini) {
   msg.set(cab, 4);
   msg.set(dados, 4 + cab.length);
   falar("streamlit:setComponentValue", {value: msg, dataType: "bytes"});
-  const n = lote.arqs.length, feito = lote.feitos + fim;
-  $("barra").value = fim / Math.max(e.arq.size, 1);
-  $("barra_total").value = feito / Math.max(lote.total, 1);
-  $("rot_arq").textContent = `Arquivo ${lote.i + 1} de ${n}: ${e.arq.name} — ${mb(fim)} de ${mb(e.arq.size)} MB`;
-  $("rot_total").textContent = `Total: ${mb(feito)} de ${mb(lote.total)} MB (${(100 * feito / Math.max(lote.total, 1)).toFixed(0)}%)`;
-  texto(fim >= e.arq.size && e.ultimo ? "Envio concluído. Preparando no servidor…" : "Enviando…");
+  progresso(e, fim);
+  // o "Loading…" fica piscando até o servidor terminar: o quadro é trocado quando o dente abre
+  $("aviso").textContent = fim >= e.arq.size && e.ultimo ? "Loading… preparando o arquivo no servidor" : "Loading… enviando";
   // ponytail: sem resposta em 60 s, reenvia a mesma fatia (o Python ignora repetidas)
   e.t = setTimeout(() => envio === e && e.ini === ini && mandar(ini), 60000);
 }
@@ -88,22 +117,34 @@ function proximo() {
   mandar(0);
 }
 
-function iniciar(lista) {
+function escolher(lista) {
   const arqs = Array.from(lista || []);
   if (!arqs.length || lote) return;
   const ruim = arqs.find((a) => !/\.(stl|zip)$/i.test(a.name));
   if (ruim) return texto(`"${ruim.name}" não é .stl nem .zip. Escolha arquivos .stl ou .zip.`);
   const grande = limiteMb && arqs.find((a) => a.size > limiteMb * MB);
   if (grande) return texto(`"${grande.name}" tem ${mb(grande.size)} MB e passa do limite de ${limiteMb} MB por arquivo.`);
-  lote = {arqs, i: -1, feitos: 0, total: arqs.reduce((s, a) => s + a.size, 0)};
-  emAndamento(true);
-  proximo();
+  pend = arqs;
+  $("itens").replaceChildren(...arqs.map((a) => Object.assign(document.createElement("li"), {textContent: `${a.name} — ${mb(a.size)} MB`})));
+  $("soma").textContent = `${arqs.length} arquivo(s), ${mb(arqs.reduce((s, a) => s + a.size, 0))} MB no total. Nada foi enviado ainda.`;
+  texto("");
+  mostrar("lista");
 }
+
+$("importar").addEventListener("click", () => {
+  if (!pend || lote) return;
+  lote = {arqs: pend, i: -1, feitos: 0, total: pend.reduce((s, a) => s + a.size, 0)};
+  pend = null;
+  $("aviso").textContent = "Loading… enviando";
+  mostrar("andamento");
+  proximo();
+});
+$("limpar").addEventListener("click", () => { pend = null; texto(""); mostrar("zona"); });
 
 $("arq").addEventListener("change", () => {
   const arqs = Array.from($("arq").files);
   $("arq").value = "";
-  iniciar(arqs);
+  escolher(arqs);
 });
 
 // Arrastar e soltar: em todo o quadro (soltar fora da zona não abre o arquivo no navegador).
@@ -112,7 +153,7 @@ document.addEventListener("dragleave", () => $("zona").classList.remove("sobre")
 document.addEventListener("drop", (ev) => {
   ev.preventDefault();
   $("zona").classList.remove("sobre");
-  iniciar(ev.dataTransfer && ev.dataTransfer.files);
+  escolher(ev.dataTransfer && ev.dataTransfer.files);
 });
 
 $("cancelar").addEventListener("click", () => {
@@ -120,7 +161,7 @@ $("cancelar").addEventListener("click", () => {
   clearTimeout(envio.t);
   falar("streamlit:setComponentValue", {value: {cancelar: envio.id}, dataType: "json"});
   envio = lote = null;
-  emAndamento(false);
+  mostrar("zona");
   texto("Envio cancelado.");
 });
 
