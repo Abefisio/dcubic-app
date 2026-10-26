@@ -89,13 +89,25 @@ function progresso(e, fim) {
   $("barra_total").classList.toggle("oculto", n < 2);
 }
 
-// lê (e compacta) a fatia que começa em ini; devolve uma promessa
-function preparar(e, ini) {
+const FALHA_LEITURA = "Não foi possível ler o arquivo. Se ele estiver no iCloud/Google Drive, clique com o botão " +
+  "direito no Finder > Baixar Agora e tente de novo.";
+
+// lê (e compacta) a fatia que começa em ini; devolve uma promessa. NotReadableError (arquivo do
+// iCloud/Drive ainda não baixado no computador, ou disco ocupado): tenta de novo até 3 vezes.
+async function preparar(e, ini) {
   const pedaco = e.arq.slice(ini, Math.min(ini + PARTE, e.arq.size));
   const gz = GZ && !/\.zip$/i.test(e.arq.name);
-  const p = gz ? new Response(pedaco.stream().pipeThrough(new CompressionStream("gzip"))).arrayBuffer()
-               : pedaco.arrayBuffer();
-  return p.then((b) => ({ini, gz, dados: new Uint8Array(b)}));
+  for (let tentativa = 0; ; tentativa++) {
+    try {
+      // lê primeiro, compacta depois: lido via stream()+Response, o NotReadableError vira um TypeError genérico
+      let b = await pedaco.arrayBuffer();
+      if (gz) b = await new Response(new Blob([b]).stream().pipeThrough(new CompressionStream("gzip"))).arrayBuffer();
+      return {ini, gz, dados: new Uint8Array(b)};
+    } catch (err) {
+      if (err.name !== "NotReadableError" || tentativa >= 3) throw err;
+      await new Promise((r) => setTimeout(r, 1000 * (tentativa + 1)));
+    }
+  }
 }
 
 async function mandar(ini) {
@@ -107,7 +119,20 @@ async function mandar(ini) {
   // a próxima fatia já foi lida/compactada enquanto a anterior viajava: aproveita
   const pronta = e.prox && e.prox.ini === ini ? e.prox.p : preparar(e, ini);
   e.prox = fim < e.arq.size ? {ini: fim, p: preparar(e, fim)} : null;
-  const {gz, dados} = await pronta;
+  if (e.prox) e.prox.p.catch(() => {});   // a falha é tratada quando essa fatia for usada
+  let lida;
+  try {
+    lida = await pronta;
+  } catch (err) {
+    if (envio !== e) return;
+    // para o "Loading…", mostra o motivo e deixa só o Cancelar (que apaga o parcial no servidor)
+    e.falha = err.name === "NotReadableError" ? FALHA_LEITURA : `Não foi possível ler o arquivo (${err.name}).`;
+    $("aviso").classList.remove("loading");
+    $("aviso").textContent = "Envio interrompido.";
+    texto(e.falha);
+    return;
+  }
+  const {gz, dados} = lida;
   if (envio !== e) return;   // cancelado enquanto lia o disco
   const cab = new TextEncoder().encode(JSON.stringify(
     {id: e.id, nome: e.arq.name, total: e.arq.size, ini, gz, ultimo: e.ultimo, k: ++e.k}));   // k: cada envio é um valor novo
@@ -150,6 +175,8 @@ $("importar").addEventListener("click", () => {
   lote = {arqs: pend, i: -1, feitos: 0, total: pend.reduce((s, a) => s + a.size, 0)};
   pend = null;
   $("aviso").textContent = "Loading…";
+  $("aviso").classList.add("loading");
+  texto("");
   mostrar("andamento");
   proximo();
 });
