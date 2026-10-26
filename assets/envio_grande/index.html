@@ -2,26 +2,38 @@
 <html lang="pt-BR">
 <head>
 <meta charset="utf-8">
-<!-- Componente "Arquivo grande? Enviar do computador" (app.py). Sem build: fala direto o protocolo
-     de componentes do Streamlit (postMessage). Lê o arquivo em fatias com File.slice e manda UMA por
-     vez; só manda a seguinte quando o Python devolve o "ack" (próximo byte esperado) nos args. -->
+<!-- Seletor único "Enviar STL" (app.py): arrastar ou clicar, um ou vários arquivos .stl/.zip. Sem build:
+     fala direto o protocolo de componentes do Streamlit (postMessage). Lê cada arquivo em fatias com
+     File.slice e manda UMA por vez; só manda a seguinte quando o Python devolve o "ack" (próximo byte
+     esperado) nos args. Vários arquivos vão um após o outro; ack = tamanho total libera o próximo. -->
 <style>
   body { margin: 0; font: 14px sans-serif; color: var(--texto, #e6edf6); background: transparent; }
-  label.botao, button { display: inline-block; padding: 6px 12px; border-radius: 8px; cursor: pointer;
+  #zona { display: block; box-sizing: border-box; padding: 18px 12px; border-radius: 8px; cursor: pointer;
+    border: 1px dashed rgba(250, 250, 250, .35); text-align: center; background: rgba(250, 250, 250, .04); }
+  #zona:hover, #zona.sobre { border-color: var(--destaque, #00c2c9); color: var(--destaque, #00c2c9); }
+  #zona b { display: block; margin-bottom: 4px; }
+  #zona small { opacity: .75; }
+  button { padding: 6px 12px; border-radius: 8px; cursor: pointer; margin-top: 6px;
     border: 1px solid rgba(250, 250, 250, .2); background: transparent; color: inherit; font: inherit; }
-  label.botao:hover, button:hover { border-color: var(--destaque, #00c2c9); color: var(--destaque, #00c2c9); }
+  button:hover { border-color: var(--destaque, #00c2c9); color: var(--destaque, #00c2c9); }
   input[type=file] { position: absolute; width: 1px; height: 1px; opacity: 0; }
   progress { width: 100%; height: 10px; accent-color: var(--destaque, #00c2c9); }
+  .rotulo { margin: 4px 0 2px; font-size: 12px; opacity: .85; }
   #txt { margin: 6px 0; font-size: 13px; opacity: .85; }
-  .oculto { display: none; }
+  .oculto { display: none !important; }
 </style>
 </head>
 <body>
-<label class="botao" id="escolher">Escolher arquivo (.stl ou .zip)
-  <input type="file" id="arq" accept=".stl,.zip">
+<label id="zona">
+  <b>Arraste os arquivos aqui ou clique para escolher</b>
+  <small>.stl ou .zip — um ou vários de uma vez</small>
+  <input type="file" id="arq" accept=".stl,.zip" multiple>
 </label>
 <div id="andamento" class="oculto">
+  <div class="rotulo" id="rot_arq"></div>
   <progress id="barra" max="1" value="0"></progress>
+  <div class="rotulo" id="rot_total"></div>
+  <progress id="barra_total" max="1" value="0"></progress>
   <button id="cancelar" type="button">Cancelar</button>
 </div>
 <div id="txt"></div>
@@ -29,16 +41,18 @@
 // 8 MB por mensagem do WebSocket (server.maxMessageSize do Streamlit = 200 MB): margem de 25 vezes.
 const PARTE = 8 * 1024 * 1024;
 const MB = 1024 * 1024;
-let envio = null;      // {id, arq, ini (fatia em voo), k (nº da tentativa), t (cão de guarda)}
+let lote = null;       // {arqs, i (arquivo atual), feitos (bytes dos anteriores), total}
+let envio = null;      // arquivo atual: {id, arq, ultimo, ini (fatia em voo), k (nº da tentativa), t (cão de guarda)}
 let limiteMb = 0;
 const $ = (id) => document.getElementById(id);
+const mb = (b) => (b / MB).toFixed(0);
 
 function falar(type, extra) { window.parent.postMessage({isStreamlitMessage: true, type, ...extra}, "*"); }
 function altura() { falar("streamlit:setFrameHeight", {height: document.body.scrollHeight + 4}); }
 function texto(t) { $("txt").textContent = t; altura(); }
 function emAndamento(sim) {
   $("andamento").classList.toggle("oculto", !sim);
-  $("escolher").classList.toggle("oculto", sim);
+  $("zona").classList.toggle("oculto", sim);
   altura();
 }
 
@@ -50,37 +64,62 @@ async function mandar(ini) {
   const dados = new Uint8Array(await e.arq.slice(ini, fim).arrayBuffer());
   if (envio !== e) return;   // cancelado enquanto lia o disco
   const cab = new TextEncoder().encode(JSON.stringify(
-    {id: e.id, nome: e.arq.name, total: e.arq.size, ini, k: ++e.k}));   // k: cada envio é um valor novo
+    {id: e.id, nome: e.arq.name, total: e.arq.size, ini, ultimo: e.ultimo, k: ++e.k}));   // k: cada envio é um valor novo
   const msg = new Uint8Array(4 + cab.length + dados.length);
   new DataView(msg.buffer).setUint32(0, cab.length, true);
   msg.set(cab, 4);
   msg.set(dados, 4 + cab.length);
   falar("streamlit:setComponentValue", {value: msg, dataType: "bytes"});
+  const n = lote.arqs.length, feito = lote.feitos + fim;
   $("barra").value = fim / Math.max(e.arq.size, 1);
-  texto(fim >= e.arq.size
-    ? "Arquivo enviado. Preparando no servidor…"
-    : `Enviando… ${(ini / MB).toFixed(0)} de ${(e.arq.size / MB).toFixed(0)} MB (${(100 * ini / Math.max(e.arq.size, 1)).toFixed(0)}%)`);
+  $("barra_total").value = feito / Math.max(lote.total, 1);
+  $("rot_arq").textContent = `Arquivo ${lote.i + 1} de ${n}: ${e.arq.name} — ${mb(fim)} de ${mb(e.arq.size)} MB`;
+  $("rot_total").textContent = `Total: ${mb(feito)} de ${mb(lote.total)} MB (${(100 * feito / Math.max(lote.total, 1)).toFixed(0)}%)`;
+  texto(fim >= e.arq.size && e.ultimo ? "Envio concluído. Preparando no servidor…" : "Enviando…");
   // ponytail: sem resposta em 60 s, reenvia a mesma fatia (o Python ignora repetidas)
   e.t = setTimeout(() => envio === e && e.ini === ini && mandar(ini), 60000);
 }
 
-$("arq").addEventListener("change", () => {
-  const arq = $("arq").files[0];
-  $("arq").value = "";
-  if (!arq) return;
-  if (!/\.(stl|zip)$/i.test(arq.name)) return texto("Escolha um arquivo .stl ou .zip.");
-  if (limiteMb && arq.size > limiteMb * MB)
-    return texto(`O arquivo tem ${(arq.size / MB).toFixed(0)} MB e passa do limite de ${limiteMb} MB.`);
-  envio = {id: Math.random().toString(36).slice(2) + Date.now().toString(36), arq, ini: -1, k: 0, t: 0};
-  emAndamento(true);
+function proximo() {
+  if (envio) { clearTimeout(envio.t); lote.feitos += envio.arq.size; }
+  const arq = lote.arqs[++lote.i];
+  envio = {id: Math.random().toString(36).slice(2) + Date.now().toString(36), arq,
+           ultimo: lote.i === lote.arqs.length - 1, ini: -1, k: 0, t: 0};
   mandar(0);
+}
+
+function iniciar(lista) {
+  const arqs = Array.from(lista || []);
+  if (!arqs.length || lote) return;
+  const ruim = arqs.find((a) => !/\.(stl|zip)$/i.test(a.name));
+  if (ruim) return texto(`"${ruim.name}" não é .stl nem .zip. Escolha arquivos .stl ou .zip.`);
+  const grande = limiteMb && arqs.find((a) => a.size > limiteMb * MB);
+  if (grande) return texto(`"${grande.name}" tem ${mb(grande.size)} MB e passa do limite de ${limiteMb} MB por arquivo.`);
+  lote = {arqs, i: -1, feitos: 0, total: arqs.reduce((s, a) => s + a.size, 0)};
+  emAndamento(true);
+  proximo();
+}
+
+$("arq").addEventListener("change", () => {
+  const arqs = Array.from($("arq").files);
+  $("arq").value = "";
+  iniciar(arqs);
+});
+
+// Arrastar e soltar: em todo o quadro (soltar fora da zona não abre o arquivo no navegador).
+document.addEventListener("dragover", (ev) => { ev.preventDefault(); $("zona").classList.add("sobre"); });
+document.addEventListener("dragleave", () => $("zona").classList.remove("sobre"));
+document.addEventListener("drop", (ev) => {
+  ev.preventDefault();
+  $("zona").classList.remove("sobre");
+  iniciar(ev.dataTransfer && ev.dataTransfer.files);
 });
 
 $("cancelar").addEventListener("click", () => {
   if (!envio) return;
   clearTimeout(envio.t);
   falar("streamlit:setComponentValue", {value: {cancelar: envio.id}, dataType: "json"});
-  envio = null;
+  envio = lote = null;
   emAndamento(false);
   texto("Envio cancelado.");
 });
@@ -94,7 +133,10 @@ window.addEventListener("message", (ev) => {
   }
   limiteMb = a.limite_mb || 0;
   // ack = próximo byte que o Python espera; igual à fatia em voo = ainda não processada (espera)
-  if (envio && a.id === envio.id && a.ack !== envio.ini && a.ack < envio.arq.size) mandar(a.ack);
+  if (envio && a.id === envio.id && a.ack !== envio.ini) {
+    if (a.ack < envio.arq.size) mandar(a.ack);
+    else if (!envio.ultimo) proximo();   // arquivo completo no servidor: manda o próximo do lote
+  }
   altura();
 });
 

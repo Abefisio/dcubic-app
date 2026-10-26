@@ -400,55 +400,31 @@ def _segredo(nome):
     return _v or os.environ.get(nome)
 
 
-def _limite_envio_mb():
-    """Limite efetivo do envio em MB: DCUBIC_MAX_UPLOAD_MB (st.secrets ou ambiente) tem
-    prioridade; sem ele, 200 no Streamlit Community Cloud (detectado por /mount/src ou
-    HOSTNAME com "streamlit") e 2048 no Mac/servidor USP."""
-    _v = _segredo("DCUBIC_MAX_UPLOAD_MB")
-    if _v:
-        return int(_v)
-    _no_cloud = os.path.isdir("/mount/src") or "streamlit" in os.environ.get("HOSTNAME", "").lower()
-    return 200 if _no_cloud else 2048
-
-
-from streamlit import config as _st_config
-_TETO_SERVIDOR_MB = _st_config.get_option("server.maxUploadSize")  # config.toml (200) ou --server.maxUploadSize
-# O servidor recusa acima do próprio teto; a legenda não pode prometer mais do que ele aceita.
-_LIMITE_ENVIO_MB = min(_limite_envio_mb(), _TETO_SERVIDOR_MB)
-if _LIMITE_ENVIO_MB < _TETO_SERVIDOR_MB:
-    # O seletor de arquivos lê esta opção a cada exibição e recusa no navegador, antes de
-    # enviar: o servidor (Cloud, 1 GB de RAM) nem chega a receber o arquivo grande.
-    _st_config.set_option("server.maxUploadSize", _LIMITE_ENVIO_MB)
-
 st.sidebar.markdown("---")
 st.sidebar.subheader("Enviar STL")
-_upl_n = st.session_state.setdefault("_upl_n", 0)
-_envios = st.sidebar.file_uploader(
-    "Estruturas do mesmo dente (.stl ou .zip)",
-    type=["stl", "zip"],
-    accept_multiple_files=True,
-    key=f"upl_stl_{_upl_n}",
-)
 _LIMITE_DRIVE_MB = int(_segredo("DCUBIC_MAX_DRIVE_MB") or 2048)  # envio em partes e Drive
-if _LIMITE_ENVIO_MB < 2048:
-    st.sidebar.caption(f"Até {_LIMITE_ENVIO_MB} MB: use o seletor acima. Maior que isso: use "
-                       "\"Enviar do computador\" logo abaixo (ou o link do Google Drive).")
-else:
-    st.sidebar.caption(f"Limite de {_LIMITE_ENVIO_MB} MB por envio. Malhas acima de 500.000 "
-                       "triângulos são reduzidas automaticamente para visualização.")
 
-# Arquivo grande do computador, em partes: o componente (assets/envio_grande) lê o arquivo com
-# File.slice no navegador e manda fatias de 8 MB, uma por vez; cada fatia é anexada a um .part em
-# disco (stl_compactar.receber_parte) e o arquivo completo segue a MESMA etapa 2 do envio e do Drive.
-# O seletor nativo, ao contrário, segura o arquivo inteiro na RAM (880 MiB -> pico de ~3 GB).
+# Seletor ÚNICO (arrastar ou escolher, vários arquivos): o componente (assets/envio_grande) lê cada
+# arquivo com File.slice no navegador e manda fatias de 8 MB, uma por vez; cada fatia é anexada a um
+# .part em disco (stl_compactar.receber_parte). Os arquivos vão um após o outro e, no fim do último,
+# o conjunto segue a MESMA etapa 2 do Drive. O seletor nativo do Streamlit foi retirado: segurava o
+# arquivo inteiro na RAM (880 MiB -> pico de ~3 GB) e recusava acima de 200 MB com mensagem em inglês.
 _componente_envio_grande = _components.declare_component(
     "envio_grande", path=os.path.join(_DC_ASSETS, "envio_grande"))
 _chave_envio_grande = lambda: f"envio_grande_{st.session_state.get('_eg_n', 0)}"
 
 
+def _apagar_lote():
+    """Erro ou Cancelar no meio de vários arquivos: apaga os já recebidos (recebidos/)."""
+    for _nome, _cam, _sha, _tam in st.session_state.pop("_eg_lote", []):
+        if os.path.isfile(_cam):
+            os.remove(_cam)
+
+
 def _envio_grande_recebido():
-    """Callback (roda antes do fragmento): grava a fatia ou cancela. Fim, erro e cancelamento trocam
-    a chave do componente (a última fatia sai do estado do navegador) e pedem rerun do app."""
+    """Callback (roda antes do fragmento): grava a fatia ou cancela. Fim do último arquivo, erro e
+    cancelamento trocam a chave do componente (a última fatia sai do estado do navegador) e pedem
+    rerun do app. Fim de um arquivo que não é o último: o "ack" = tamanho total libera o próximo."""
     from modules import stl_compactar as _cmp
     _v = st.session_state.get(_chave_envio_grande())
     if _v is None:
@@ -457,13 +433,21 @@ def _envio_grande_recebido():
     try:
         if isinstance(_v, dict):  # botão Cancelar
             _cmp.cancelar_envio(_eg)
+            _apagar_lote()
         else:
             _eg, _rec = _cmp.receber_parte(_eg, _v, _LIMITE_DRIVE_MB)
             st.session_state["_eg"] = _eg
             if _rec is None:
                 return  # fatia gravada: o fragmento devolve o "ack"
-            st.session_state["_upl_recebidos"] = _rec  # etapa 2 (abaixo), igual ao envio e ao Drive
+            st.session_state.setdefault("_eg_lote", []).extend(_rec)
+            if not _eg["ultimo"]:
+                return  # arquivo completo; o navegador manda o próximo do lote
+            _lote = st.session_state.pop("_eg_lote")
+            if not _lote:
+                raise ValueError("Nenhum arquivo .stl encontrado no envio.")
+            st.session_state["_upl_recebidos"] = _lote  # etapa 2 (abaixo), igual ao Drive
     except Exception as _ee:  # .part já apagado por receber_parte
+        _apagar_lote()
         st.session_state["_upl_msg"] = ("erro", str(_ee))
     st.session_state.pop("_eg", None)
     st.session_state["_eg_n"] = st.session_state.get("_eg_n", 0) + 1
@@ -481,13 +465,14 @@ def _envio_grande():
                              on_change=_envio_grande_recebido, default=None)
 
 
-st.sidebar.markdown(f"**Arquivo grande (até {_LIMITE_DRIVE_MB} MB)? Enviar do computador**")
 with st.sidebar:
     _envio_grande()
+st.sidebar.caption(f"Arraste ou escolha os arquivos .stl/.zip do mesmo dente (até {_LIMITE_DRIVE_MB} MB "
+                   "cada). Malhas acima de 500.000 triângulos são reduzidas automaticamente.")
 
-# Arquivo grande pelo link do Google Drive: baixado direto para o disco do servidor (não passa
-# pelo navegador nem pelo limite do seletor) e entregue ao MESMO pós-recebimento do envio.
-_link_drive = st.sidebar.text_input("Arquivo grande? Cole o link do Google Drive (.stl ou .zip)",
+# Alternativa pelo link do Google Drive: baixado direto para o disco do servidor (não passa
+# pelo navegador) e entregue ao MESMO pós-recebimento do envio.
+_link_drive = st.sidebar.text_input("Ou cole o link do Google Drive (.stl ou .zip)",
                                     key="drive_link")
 st.sidebar.caption("No Google Drive: clique direito no arquivo > Compartilhar > Acesso geral: "
                    "Qualquer pessoa com o link > Copiar link.")
@@ -504,39 +489,7 @@ if st.sidebar.button("Importar do Drive", key="drive_importar") and _link_drive.
     except Exception as _de:
         st.session_state["_upl_msg"] = ("erro", str(_de))
     _barra_drive.empty()  # a etapa 2 (abaixo) mostra Reduzindo… / Pronto
-# Envio em duas etapas, para não manter na RAM o arquivo enviado e a compactação ao mesmo tempo:
-#  1) grava os arquivos em disco (por blocos) e troca a chave do uploader -> no rerun o
-#     Streamlit descarta os bytes do envio;
-#  2) no rerun seguinte, compacta a partir do disco, um arquivo por vez.
-def _liberar_envios(envios):
-    """Tira os bytes do envio do gerenciador de uploads do Streamlit, que os manteria na RAM
-    até o fim da sessão (trocar a chave do uploader não basta)."""
-    try:  # API interna do Streamlit (versão fixada no requirements); na falha, segue sem liberar
-        from streamlit.runtime import Runtime
-        from streamlit.runtime.scriptrunner import get_script_run_ctx
-        _sid = get_script_run_ctx().session_id
-        for _e in envios:
-            Runtime.instance().uploaded_file_mgr.remove_file(_sid, _e.file_id)
-            _e.close()
-    except Exception:
-        pass
-
-
-if _envios:
-    from modules import stl_compactar as _cmp
-    _barra = st.sidebar.progress(0.0, text="Recebendo…")
-    try:
-        _cmp.checar_tamanho(sum(_e.size for _e in _envios), _LIMITE_ENVIO_MB)  # etapa 1: só o tamanho
-        st.session_state["_upl_recebidos"] = _cmp.receber(_envios)
-        if not st.session_state["_upl_recebidos"]:
-            raise ValueError("Nenhum arquivo .stl encontrado no envio.")
-    except Exception as _ue:  # inclui MemoriaInsuficiente (mensagem já orienta o usuário)
-        st.session_state.pop("_upl_recebidos", None)
-        st.session_state["_upl_msg"] = ("erro", str(_ue))
-    _liberar_envios(_envios)
-    del _envios
-    st.session_state["_upl_n"] = _upl_n + 1  # uploader novo: o envio sai da memória
-    st.rerun()
+# Etapa 2 (envio e Drive): os arquivos já estão em disco; compacta a partir dele, um por vez.
 if "_upl_recebidos" in st.session_state:
     from modules import stl_compactar as _cmp
     _recebidos = st.session_state.pop("_upl_recebidos")
