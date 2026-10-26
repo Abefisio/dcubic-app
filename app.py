@@ -429,15 +429,64 @@ _envios = st.sidebar.file_uploader(
     accept_multiple_files=True,
     key=f"upl_stl_{_upl_n}",
 )
+_LIMITE_DRIVE_MB = int(_segredo("DCUBIC_MAX_DRIVE_MB") or 2048)  # envio em partes e Drive
 if _LIMITE_ENVIO_MB < 2048:
-    st.sidebar.caption(f"Limite de {_LIMITE_ENVIO_MB} MB por envio. Arquivos acima de "
-                       f"{_LIMITE_ENVIO_MB} MB só podem ser abertos na versão local/servidor USP.")
+    st.sidebar.caption(f"Até {_LIMITE_ENVIO_MB} MB: use o seletor acima. Maior que isso: use "
+                       "\"Enviar do computador\" logo abaixo (ou o link do Google Drive).")
 else:
     st.sidebar.caption(f"Limite de {_LIMITE_ENVIO_MB} MB por envio. Malhas acima de 500.000 "
                        "triângulos são reduzidas automaticamente para visualização.")
+
+# Arquivo grande do computador, em partes: o componente (assets/envio_grande) lê o arquivo com
+# File.slice no navegador e manda fatias de 8 MB, uma por vez; cada fatia é anexada a um .part em
+# disco (stl_compactar.receber_parte) e o arquivo completo segue a MESMA etapa 2 do envio e do Drive.
+# O seletor nativo, ao contrário, segura o arquivo inteiro na RAM (880 MiB -> pico de ~3 GB).
+_componente_envio_grande = _components.declare_component(
+    "envio_grande", path=os.path.join(_DC_ASSETS, "envio_grande"))
+_chave_envio_grande = lambda: f"envio_grande_{st.session_state.get('_eg_n', 0)}"
+
+
+def _envio_grande_recebido():
+    """Callback (roda antes do fragmento): grava a fatia ou cancela. Fim, erro e cancelamento trocam
+    a chave do componente (a última fatia sai do estado do navegador) e pedem rerun do app."""
+    from modules import stl_compactar as _cmp
+    _v = st.session_state.get(_chave_envio_grande())
+    if _v is None:
+        return
+    _eg = st.session_state.get("_eg")
+    try:
+        if isinstance(_v, dict):  # botão Cancelar
+            _cmp.cancelar_envio(_eg)
+        else:
+            _eg, _rec = _cmp.receber_parte(_eg, _v, _LIMITE_DRIVE_MB)
+            st.session_state["_eg"] = _eg
+            if _rec is None:
+                return  # fatia gravada: o fragmento devolve o "ack"
+            st.session_state["_upl_recebidos"] = _rec  # etapa 2 (abaixo), igual ao envio e ao Drive
+    except Exception as _ee:  # .part já apagado por receber_parte
+        st.session_state["_upl_msg"] = ("erro", str(_ee))
+    st.session_state.pop("_eg", None)
+    st.session_state["_eg_n"] = st.session_state.get("_eg_n", 0) + 1
+    st.session_state["_eg_fim"] = True
+
+
+@st.fragment
+def _envio_grande():
+    """Cada fatia reexecuta só este fragmento; o app inteiro só roda de novo no fim."""
+    if st.session_state.pop("_eg_fim", False):
+        st.rerun(scope="app")
+    _eg = st.session_state.get("_eg")
+    _componente_envio_grande(id=_eg["id"] if _eg else None, ack=_eg["n"] if _eg else 0,
+                             limite_mb=_LIMITE_DRIVE_MB, key=_chave_envio_grande(),
+                             on_change=_envio_grande_recebido, default=None)
+
+
+st.sidebar.markdown(f"**Arquivo grande (até {_LIMITE_DRIVE_MB} MB)? Enviar do computador**")
+with st.sidebar:
+    _envio_grande()
+
 # Arquivo grande pelo link do Google Drive: baixado direto para o disco do servidor (não passa
 # pelo navegador nem pelo limite do seletor) e entregue ao MESMO pós-recebimento do envio.
-_LIMITE_DRIVE_MB = int(_segredo("DCUBIC_MAX_DRIVE_MB") or 2048)
 _link_drive = st.sidebar.text_input("Arquivo grande? Cole o link do Google Drive (.stl ou .zip)",
                                     key="drive_link")
 st.sidebar.caption("No Google Drive: clique direito no arquivo > Compartilhar > Acesso geral: "

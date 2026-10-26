@@ -79,8 +79,8 @@ def checar_tamanho(bytes_envio: int, limite_mb: int = LIMITE_LOCAL_MB) -> None:
     mb = bytes_envio / 1024 ** 2
     if mb > limite_mb:
         if limite_mb < LIMITE_LOCAL_MB:
-            raise ValueError(f"O envio tem {mb:.0f} MB. Arquivos acima de {limite_mb} MB só podem "
-                             "ser abertos na versão local/servidor USP.")
+            raise ValueError(f"O envio tem {mb:.0f} MB. Acima de {limite_mb} MB, use \"Arquivo grande? "
+                             "Enviar do computador\" (ou o link do Google Drive).")
         raise ValueError(f"O envio tem {mb:.0f} MB e passa do limite de {limite_mb} MB por envio.")
 
 
@@ -212,6 +212,19 @@ def _apagar(caminho):
         os.remove(caminho)
 
 
+def _checar_limite(n, limite_bytes, livre_bytes):
+    """Drive e envio em partes: recusa ao passar do limite (DCUBIC_MAX_DRIVE_MB) ou quando
+    FATOR_DISCO × bytes recebidos passa do espaço livre medido no início."""
+    if n > limite_bytes:
+        raise ValueError(f"O arquivo passa do limite de {limite_bytes // 1024 ** 2} MB "
+                         "(DCUBIC_MAX_DRIVE_MB). A transferência foi interrompida.")
+    if FATOR_DISCO * n > livre_bytes:
+        precisa_mb = max(1, math.ceil(FATOR_DISCO * n / 1024 ** 2))
+        raise ValueError(f"Espaço em disco insuficiente no servidor: são necessários cerca de "
+                         f"{precisa_mb} MB livres e há apenas {livre_bytes // 1024 ** 2} MB. "
+                         "A transferência foi interrompida.")
+
+
 class _GravadorLimitado:
     """Destino do gdown (que grava em blocos de 512 KB): conta os bytes e interrompe o
     download ao passar do limite ou ao faltar disco; avisa o progresso a cada ~8 MB."""
@@ -222,14 +235,7 @@ class _GravadorLimitado:
 
     def write(self, b):
         self.n += len(b)
-        if self.n > self.limite:
-            raise ValueError(f"O arquivo do Drive passa do limite de {self.limite // 1024 ** 2} MB "
-                             "(DCUBIC_MAX_DRIVE_MB). O download foi interrompido.")
-        if FATOR_DISCO * self.n > self.livre:
-            precisa_mb = max(1, math.ceil(FATOR_DISCO * self.n / 1024 ** 2))
-            raise ValueError(f"Espaço em disco insuficiente no servidor: são necessários cerca de "
-                             f"{precisa_mb} MB livres e há apenas {self.livre // 1024 ** 2} MB. "
-                             "O download foi interrompido.")
+        _checar_limite(self.n, self.limite, self.livre)
         if self.n - self._ultimo >= 8 * 1024 ** 2:
             self._ultimo = self.n
             mb = self.n / 1024 ** 2
@@ -294,8 +300,8 @@ def receber_baixado(caminho: str, pasta: str = PASTA_CACHE, progresso=None):
             try:
                 tipo_stl(caminho)
             except (ValueError, struct.error):
-                raise ValueError("O arquivo baixado não é um .stl nem um .zip válido (o link pode exigir "
-                                 "login ou apontar para outro tipo de arquivo).") from None
+                raise ValueError("O arquivo não é um .stl nem um .zip válido (se veio do Drive, o link pode "
+                                 "exigir login ou apontar para outro tipo de arquivo).") from None
         if meu:   # receber() escolhe .zip/.stl pelo nome
             final = os.path.splitext(caminho)[0] + (".zip" if eh_zip else ".stl")
             os.replace(caminho, final)
@@ -306,6 +312,65 @@ def receber_baixado(caminho: str, pasta: str = PASTA_CACHE, progresso=None):
     finally:
         if meu:
             _apagar(caminho)
+
+
+# ── 1c. Recebendo do computador em partes (componente assets/envio_grande) ──────────
+# O seletor nativo do Streamlit segura o arquivo inteiro na RAM (880 MiB -> pico de ~3 GB, acima
+# dos 2,7 GB do Cloud). Aqui o navegador lê o arquivo em fatias (File.slice) e manda uma por vez;
+# cada fatia é anexada a um .part na pasta do Drive: só uma fatia fica na memória do servidor.
+
+def iniciar_envio(nome: str, total: int, limite_mb: int = LIMITE_DRIVE_MB, pasta: str = PASTA_CACHE) -> dict:
+    """Antes da 1ª fatia: recusa extensão, tamanho declarado e falta de disco; cria o .part (nome
+    único: duas sessões nunca gravam no mesmo arquivo). -> estado do envio."""
+    nome = os.path.basename(nome or "")
+    if not nome.lower().endswith((".stl", ".zip")):
+        raise ValueError("Envie um arquivo .stl ou .zip.")
+    destino_dir = os.path.join(pasta, "drive")
+    os.makedirs(destino_dir, exist_ok=True)
+    livre = shutil.disk_usage(destino_dir).free
+    _checar_limite(int(total), limite_mb * 1024 ** 2, livre)
+    fd, part = tempfile.mkstemp(dir=destino_dir, prefix="envio_", suffix=".part")
+    os.close(fd)
+    return {"nome": nome, "total": int(total), "n": 0, "part": part,
+            "limite": limite_mb * 1024 ** 2, "livre": livre}
+
+
+def cancelar_envio(estado) -> None:
+    if estado:
+        _apagar(estado["part"])
+
+
+def receber_parte(estado, valor, limite_mb: int = LIMITE_DRIVE_MB, pasta: str = PASTA_CACHE, progresso=None):
+    """Uma fatia do componente. valor = 4 bytes (tamanho do cabeçalho, little-endian) + cabeçalho JSON
+    {id, nome, total, ini} + dados. estado = envio em andamento (ou None).
+    Só grava a fatia que começa em estado['n']: repetida (rerun) é ignorada e, fora de ordem, o
+    navegador reenvia a partir de estado['n'] (o "ack"). Arquivo completo -> receber_baixado (mesma
+    validação e cópia para recebidos/ do Drive). Em erro apaga o .part e repassa o erro.
+    -> (estado, recebidos): recebidos = lista (nome, caminho, sha1, bytes) no fim, senão None."""
+    tam = int.from_bytes(valor[:4], "little")
+    cab = json.loads(bytes(valor[4:4 + tam]))
+    dados = memoryview(valor)[4 + tam:]
+    if not estado or estado["id"] != cab["id"]:   # envio novo: o anterior, se houver, é abandonado
+        cancelar_envio(estado)
+        estado = dict(iniciar_envio(cab["nome"], cab["total"], limite_mb, pasta), id=cab["id"])
+    try:
+        if cab["ini"] == estado["n"]:
+            fim = estado["n"] + len(dados)
+            if fim > estado["total"]:
+                raise ValueError("O envio recebeu mais dados do que o tamanho do arquivo.")
+            _checar_limite(fim, estado["limite"], estado["livre"])
+            with open(estado["part"], "ab") as f:
+                f.write(dados)
+            estado["n"] = fim
+        if estado["n"] < estado["total"]:
+            return estado, None
+        rec = receber_baixado(estado["part"], pasta, progresso)   # apaga o .part em qualquer caso
+    except BaseException:
+        cancelar_envio(estado)
+        raise
+    if len(rec) == 1 and estado["nome"].lower().endswith(".stl"):   # .stl único: mantém o nome original
+        rec = [(estado["nome"], *rec[0][1:])]
+    return estado, rec
 
 
 def limpar_cache_antigo(pasta: str = PASTA_CACHE, dias: float = 2) -> list:
@@ -590,3 +655,50 @@ if __name__ == "__main__":
     except ValueError:
         assert not os.path.exists(os.path.join(d, "drive", "x.part"))
     print("drive OK")
+    # Envio em partes: ordem, fatia repetida, fora de ordem, limite, disco, cancelamento, conclusão.
+    with open(r[0]["caminho"], "rb") as a:
+        cubo_bin = a.read()   # 84 + 12 × 50 = 684 bytes
+
+    def fatia(id_, ini, dados, nome="dente.stl", total=len(cubo_bin)):
+        c = json.dumps({"id": id_, "nome": nome, "total": total, "ini": ini}).encode()
+        return len(c).to_bytes(4, "little") + c + dados
+
+    def parts():
+        return [x for x in os.listdir(os.path.join(d, "drive")) if x.startswith("envio_")]
+    est, rec = receber_parte(None, fatia("a", 0, cubo_bin[:300]), pasta=d)
+    assert est["n"] == 300 and rec is None and len(parts()) == 1
+    est, rec = receber_parte(est, fatia("a", 0, cubo_bin[:300]), pasta=d)        # repetida (rerun)
+    assert est["n"] == 300 and os.path.getsize(est["part"]) == 300
+    est, rec = receber_parte(est, fatia("a", 600, cubo_bin[600:]), pasta=d)      # adiantada: não grava
+    assert est["n"] == 300 and rec is None
+    est, rec = receber_parte(est, fatia("a", 300, cubo_bin[300:]), pasta=d)      # conclui -> receber_baixado
+    assert rec and rec[0][0] == "dente.stl" and rec[0][3] == len(cubo_bin) and os.path.isfile(rec[0][1])
+    assert not parts(), "o .part deveria ter sido apagado"
+    for erro, chamada in [
+        ("limite", lambda: receber_parte(None, fatia("b", 0, b"", total=3 * 1024 ** 2), limite_mb=2, pasta=d)),
+        ("extensão", lambda: receber_parte(None, fatia("c", 0, b"", nome="x.exe"), pasta=d)),
+    ]:
+        try:
+            chamada()
+            raise AssertionError(f"{erro} aceito")
+        except ValueError:
+            assert not parts()
+    est, _ = receber_parte(None, fatia("d", 0, cubo_bin[:100]), pasta=d)
+    est["livre"] = 300   # falta de disco simulada: 2,5 × 200 bytes > 300
+    try:
+        receber_parte(est, fatia("d", 100, cubo_bin[100:200]), pasta=d)
+        raise AssertionError("falta de disco não detectada")
+    except ValueError as e:
+        assert "disco" in str(e) and not parts()
+    est, _ = receber_parte(None, fatia("e", 0, cubo_bin[:100]), pasta=d)
+    est2, _ = receber_parte(est, fatia("f", 0, cubo_bin[:100]), pasta=d)        # envio novo abandona o anterior
+    assert not os.path.exists(est["part"]) and len(parts()) == 1
+    cancelar_envio(est2)                                                           # botão Cancelar
+    assert not parts()
+    html = b"<!DOCTYPE html><title>x</title>"
+    try:   # conclusão chama a validação: conteúdo que não é STL é recusado e o .part apagado
+        receber_parte(None, fatia("g", 0, html, total=len(html)), pasta=d)
+        raise AssertionError("HTML aceito")
+    except ValueError:
+        assert not parts()
+    print("envio em partes OK")
