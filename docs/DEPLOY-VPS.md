@@ -92,3 +92,11 @@ docker logs --since 5m traefik-traefik-1 2>&1 | grep -i dcubic
 ```
 
 Saúde: `curl -s https://app.dcubic.reloadcursos.com/_stcore/health` deve responder `ok`.
+
+## Conferir o envio grande depois de atualizar
+
+- `curl -s -o /dev/null -w "%{http_code}\n" https://app.dcubic.reloadcursos.com/dcubic-envio/0123456789abcdef0123456789abcdef`
+  deve responder `403` (rota registrada e protegida; ela é registrada na 1ª visita à página).
+- Envio real: entrar no app e arrastar um STL grande. O gerador `tools/gerar_stl_teste.py` cria um
+  sintético de ~3 GB. O resultado medido em 29/10/2026 está em `docs/ENVIO-3GB.md`.
+- Espaço em disco: `du -sh /docker/dcubic-dados/uploads` (parciais, prontos e cache somem após 24 h).

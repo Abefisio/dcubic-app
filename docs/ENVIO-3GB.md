@@ -84,7 +84,19 @@ Ver o relatório `~/Desktop/RELATORIOS-CLAUDE/dcubic-3gb-vps.txt` (saída bruta)
 | Memória (`/usr/bin/time -l`) | pico de RSS 773 MB (1ª rodada) e 1.206 MB (2ª rodada, maior processo, inclusive a redução); pico de footprint do servidor 497 MB / 848 MB; memória em uso na redução de 3 GB: 298 MB (tracemalloc; o resto é memória livre retida pelo alocador do macOS) |
 | Sem `DCUBIC_ENVIO_GRANDE` | envio antigo pelo websocket e redução comum (500 mil) funcionando; rota `/dcubic-envio` inexistente |
 
-**VPS:** ver o relatório (teste 13).
+**VPS (29/10/2026, 1 vCPU, contêiner com `mem_limit: 2g` e `cpus: 1.0`):**
+
+| Teste | Resultado |
+|---|---|
+| Endereço público (sem forçar IP) | DNS → 152.239.113.183, HTTPS 200 com certificado Let's Encrypt válido, `/_stcore/health` = ok, tela de login no Chromium; `/dcubic-envio/...` sem token → 403 |
+| Sintético 3 GB enviado do Mac pelo componente (Chromium/Playwright) | 1.096 s (18 min; ~2,8 MB/s com o gzip das partes), conferência final (tamanho + SHA-256) em 5,2 s; redução + abertura em 194 s; 1.355.521 triângulos, volume −0,07% (igual ao local); 3D abre e gira |
+| Memória do processo da redução (Linux, `getrusage`) | 406 MiB de pico; memória anônima do contêiner inteiro (servidor + redução) 446 MiB; o servidor do Streamlit ficou em 448 MiB (VmHWM) |
+| `docker stats` durante o teste | pico de 1,55 GiB no contêiner de teste logo após o envio: é sobretudo cache de arquivo (o arquivo de 3 GB lido duas vezes, conferência e redução), que o kernel recupera quando precisa; não houve OOM |
+| Unlock Guide durante o teste | HTTP 200 em todas as 42 verificações (a cada 30 s); DCubic público com `ok` em todas |
+
+O teste autenticado da VPS rodou num contêiner temporário com a **mesma imagem e os mesmos limites**,
+acessado por túnel SSH e com um usuário de teste descartável: não existe usuário `demo` no `users.yaml`
+real, e o teste não cria contas nem usa senhas reais. O contêiner e os dados do teste foram removidos.
 
 ## Como atualizar e reverter
 
