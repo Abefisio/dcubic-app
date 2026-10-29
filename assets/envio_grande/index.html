@@ -156,9 +156,9 @@ async function mandar(ini) {
 // SHA-256 de cada bloco de 1 MiB. Queda de conexão: espera, pergunta ao servidor quais blocos já
 // chegaram e manda só os que faltam (escolher o mesmo arquivo de novo também retoma). O tamanho da
 // parte acompanha a velocidade (~20 s por pedido: o proxy da VPS corta pedidos com mais de 60 s).
-const BLOCO = MB, PARTE_MAX = 32 * MB, GB = 1024 * MB;
+const BLOCO = MB, PARTE_MAX = 32 * MB, GB = 1024 * MB, PARALELO = 4;   // PARALELO: pedidos PUT ao mesmo tempo
 let http = null;   // {token, limite} vindos do app
-let ctl = null;    // envio HTTP em andamento: {ids (prontos), id (atual), cancelado, xhr}
+let ctl = null;    // envio HTTP em andamento: {ids (prontos), id (atual), cancelado, xhrs (pedidos em voo)}
 const gb = (b) => (b / GB).toFixed(2).replace(".", ",");
 const esperar = (ms) => new Promise((r) => setTimeout(r, ms));
 const hex = (buf) => Array.from(new Uint8Array(buf), (b) => b.toString(16).padStart(2, "0")).join("");
@@ -181,7 +181,7 @@ function req(metodo, caminho, corpo, cab, aoEnviar) {
     };
     x.onerror = x.ontimeout = () => falha(erro(0, "Sem conexão com o servidor."));
     x.onabort = () => falha(erro(-1, "cancelado"));
-    if (ctl) ctl.xhr = x;
+    if (ctl) { ctl.xhrs.add(x); x.addEventListener("loadend", () => ctl && ctl.xhrs.delete(x)); }
     x.send(corpo === undefined ? null : corpo);
   });
 }
@@ -213,8 +213,12 @@ async function prepararFaixa(arq, b, e, gz) {   // blocos [b, e): bytes, SHA-256
   const buf = await lerFaixa(arq, b * BLOCO, Math.min(e * BLOCO, arq.size)), shas = [];
   for (let i = 0; i < buf.byteLength; i += BLOCO)
     shas.push(hex(await crypto.subtle.digest("SHA-256", new Uint8Array(buf, i, Math.min(BLOCO, buf.byteLength - i)))));
-  const corpo = gz ? await new Response(new Blob([buf]).stream().pipeThrough(new CompressionStream("gzip"))).arrayBuffer() : buf;
-  return {b, e, shas, corpo, bytes: buf.byteLength};
+  let corpo = buf, zip = false;
+  if (gz) {   // só vai compactada se encolher de verdade (>= 8%): senão economiza também o gunzip do servidor
+    const c = await new Response(new Blob([buf]).stream().pipeThrough(new CompressionStream("gzip"))).arrayBuffer();
+    if (c.byteLength < 0.92 * buf.byteLength) { corpo = c; zip = true; }
+  }
+  return {b, e, shas, corpo, zip, bytes: buf.byteLength};
 }
 function faixa(tem, de, nb) {   // primeiro trecho que falta a partir de `de`, com até nb blocos seguidos
   const b = tem.indexOf(0, de);
@@ -246,54 +250,80 @@ async function enviarArquivoHttp(arq) {
   c.id = ini.id;
   let tem = Uint8Array.from(ini.mapa, (ch) => ch === "1" ? 1 : 0);
   const n = tem.length, shas = new Array(n).fill("");   // "" = ainda sem hash (every() pularia buracos)
-  const feitos = () => { let s = 0; for (let k = 0; k < n; k++) if (tem[k]) s += Math.min(BLOCO, arq.size - k * BLOCO); return s; };
-  let nb = 8, vel = 0, falhas = 0, prox = null;   // começa com 8 MiB por parte e ajusta pela velocidade
+  const feitos = () => { let s = 0; for (let k = 0; k < n; k++) if (tem[k] === 1) s += Math.min(BLOCO, arq.size - k * BLOCO); return s; };
+  let nb = 4, vel = 0, falhas = 0, rec = null;   // partes de 4 MiB no início; o tamanho acompanha a velocidade
+  const voo = new Map(), amostras = [];            // bytes já enviados de cada parte em voo; (instante, bytes) p/ MB/s
+  const velTotal = () => {                          // velocidade do conjunto: janela dos últimos ~15 s
+    const agora = performance.now(), feito = feitos() + [...voo.values()].reduce((a, b) => a + b, 0);
+    amostras.push([agora, feito]);
+    while (amostras.length > 2 && agora - amostras[0][0] > 15000) amostras.shift();
+    const [t0, b0] = amostras[0];
+    return agora - t0 > 1500 ? (feito - b0) / ((agora - t0) / 1000) : 0;
+  };
+  const andamento = () => mostrarHttp(arq, feitos() + [...voo.values()].reduce((a, b) => a + b, 0), velTotal());
+  // Recuperação de queda: UMA espera e UMA consulta ao servidor, mesmo que várias partes falhem juntas.
+  const recuperar = () => rec || (rec = (async () => {
+    nb = Math.max(1, nb >> 1);   // conexão lenta/instável: partes menores
+    await pausaRede(falhas++);
+    // o servidor diz o que chegou (blocos completos ficam marcados mesmo com a queda no meio da parte)
+    const m = (await comRetomada(() => req("GET", c.id))).mapa;
+    for (let k = 0; k < n; k++) if (m[k] === "1" && tem[k] !== 2) tem[k] = 1;
+    rec = null;
+  })());
+  // Cada trabalhador pega o primeiro trecho ainda sem dono (tem = 0; 2 = em voo), prepara e envia.
+  async function trabalhador(w) {
+    for (;;) {
+      if (c.cancelado || c.parar) return;
+      const f = faixa(tem, 0, nb);
+      if (!f) return;
+      const [b, e] = f;
+      tem.fill(2, b, e);
+      try {
+        const p = await prepararFaixa(arq, b, e, gz);
+        p.shas.forEach((h, j) => { shas[b + j] = h; });
+        const ts = performance.now();
+        await req("PUT", `${c.id}?ini=${b * BLOCO}`, p.corpo,
+                  {"X-DCubic-Sha": p.shas.join(","), ...(p.zip ? {"X-DCubic-Gz": "1"} : {})},
+                  (fr) => { voo.set(w, fr * p.bytes); andamento(); });
+        voo.delete(w);
+        tem.fill(1, b, e);
+        const v = p.bytes / Math.max((performance.now() - ts) / 1000, 0.05);   // desta parte (compartilhando a banda)
+        vel = vel ? 0.7 * vel + 0.3 * v : v;
+        nb = Math.max(1, Math.min(PARTE_MAX / BLOCO, Math.floor(vel * 20 / BLOCO)));
+        falhas = 0;
+        andamento();
+      } catch (err) {
+        voo.delete(w);
+        for (let k = b; k < e; k++) if (tem[k] === 2) tem[k] = 0;   // devolve o trecho: outra volta o reenvia
+        if (c.cancelado || c.parar || definitivo(err) || falhas >= 40) throw err;
+        await recuperar();
+      }
+    }
+  }
   for (;;) {
     if (c.cancelado) throw Object.assign(new Error("cancelado"), {status: -1});
-    let f = faixa(tem, 0, nb);
-    if (!f) {   // tudo no servidor: hash composto (relê do computador os blocos que já estavam lá na retomada)
-      for (let k = 0; k < n; k += 32) {
-        if (shas.slice(k, Math.min(k + 32, n)).every(Boolean)) continue;
-        mostrarHttp(arq, k * BLOCO, 0, "Conferindo");
-        (await prepararFaixa(arq, k, Math.min(k + 32, n), false)).shas.forEach((h, j) => { shas[k + j] = h; });
-      }
-      mostrarHttp(arq, arq.size, 0, "Conferindo no servidor (tamanho e SHA-256)");
-      const comp = hex(await crypto.subtle.digest("SHA-256", Uint8Array.from(shas.join("").match(/../g), (h) => parseInt(h, 16))));
-      const r = await comRetomada(() => req("POST", `${c.id}/concluir`, JSON.stringify({hash: comp}), {"Content-Type": "application/json"}));
-      if (r.ok) return c.id;
-      tem = Uint8Array.from(r.mapa, (ch) => ch === "1" ? 1 : 0);   // bloco que não conferiu no disco: reenvia
+    if (tem.includes(0)) {   // há o que enviar (início, ou trechos devolvidos após uma queda)
+      const ts = Array.from({length: PARALELO}, (_, w) => trabalhador(w));
+      try { await Promise.all(ts); }
+      catch (err) { c.parar = true; c.xhrs.forEach((x) => x.abort()); await Promise.allSettled(ts); throw err; }
       continue;
     }
-    if (prox && prox.b === f[0]) f = [prox.b, prox.e];   // aproveita a faixa já lida enquanto a anterior viajava
-    const [b, e] = f, pronta = prox && prox.b === b ? prox.p : prepararFaixa(arq, b, e, gz);
-    const f2 = faixa(tem, e, nb);
-    prox = f2 ? {b: f2[0], e: f2[1], p: prepararFaixa(arq, f2[0], f2[1], gz)} : null;
-    if (prox) prox.p.catch(() => {});
-    const p = await pronta;
-    p.shas.forEach((h, j) => { shas[b + j] = h; });
-    const base = feitos(), ts = performance.now();
-    try {
-      await req("PUT", `${c.id}?ini=${b * BLOCO}`, p.corpo, {"X-DCubic-Sha": p.shas.join(","), ...(gz ? {"X-DCubic-Gz": "1"} : {})},
-                (fr) => mostrarHttp(arq, base + fr * p.bytes, vel));
-      tem.fill(1, b, e);
-      const v = p.bytes / Math.max((performance.now() - ts) / 1000, 0.05);
-      vel = vel ? 0.7 * vel + 0.3 * v : v;
-      nb = Math.max(1, Math.min(PARTE_MAX / BLOCO, Math.floor(vel * 20 / BLOCO)));
-      falhas = 0;
-      mostrarHttp(arq, feitos(), vel);
-    } catch (err) {
-      if (definitivo(err) || falhas >= 40) throw err;
-      prox = null;
-      nb = Math.max(1, nb >> 1);   // conexão lenta/instável: partes menores
-      await pausaRede(falhas++);
-      // pergunta o que chegou: blocos completos ficam marcados no servidor mesmo com a queda no meio da parte
-      tem = Uint8Array.from((await comRetomada(() => req("GET", c.id))).mapa, (ch) => ch === "1" ? 1 : 0);
+    // tudo no servidor: hash composto (relê do computador os blocos que já estavam lá na retomada)
+    for (let k = 0; k < n; k += 32) {
+      if (shas.slice(k, Math.min(k + 32, n)).every(Boolean)) continue;
+      mostrarHttp(arq, k * BLOCO, 0, "Conferindo");
+      (await prepararFaixa(arq, k, Math.min(k + 32, n), false)).shas.forEach((h, j) => { shas[k + j] = h; });
     }
+    mostrarHttp(arq, arq.size, 0, "Conferindo no servidor (tamanho e SHA-256)");
+    const comp = hex(await crypto.subtle.digest("SHA-256", Uint8Array.from(shas.join("").match(/../g), (h) => parseInt(h, 16))));
+    const r = await comRetomada(() => req("POST", `${c.id}/concluir`, JSON.stringify({hash: comp}), {"Content-Type": "application/json"}));
+    if (r.ok) return c.id;
+    tem = Uint8Array.from(r.mapa, (ch) => ch === "1" ? 1 : 0);   // bloco que não conferiu no disco: reenvia
   }
 }
 
 async function enviarLoteHttp() {
-  const c = ctl = {ids: [], id: null, cancelado: false, xhr: null};
+  const c = ctl = {ids: [], id: null, cancelado: false, xhrs: new Set()};
   try {
     for (lote.i = 0; lote.i < lote.arqs.length; lote.i++) {
       c.ids.push(await enviarArquivoHttp(lote.arqs[lote.i]));
@@ -318,7 +348,7 @@ function cancelarHttp() {   // interrompe e apaga, no servidor, o parcial e os a
   const c = ctl;
   ctl = null;
   c.cancelado = true;
-  if (c.xhr) c.xhr.abort();
+  c.xhrs.forEach((x) => x.abort());
   for (const id of [...c.ids, c.id].filter(Boolean)) {
     const x = new XMLHttpRequest();
     x.open("DELETE", "/dcubic-envio/" + id);

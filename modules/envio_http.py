@@ -556,6 +556,17 @@ if __name__ == "__main__":
     st_, r = req("POST", f"{id2}/concluir", js({"hash": composto}), ana)
     assert st_ == 200 and not r["ok"] and r["mapa"] == "101", r
     assert req("DELETE", id2, token=ana)[0] == 200 and not os.path.exists(_cam(id2, ".part"))   # Cancelar
+    # partes em paralelo (o navegador manda 4 PUTs ao mesmo tempo): faixas diferentes do mesmo envio
+    st_, r = req("POST", "iniciar", js({**novo, "chave": "paralelo"}), ana)
+    id3, res = r["id"], {}
+    ts = [threading.Thread(target=lambda k, a, b: res.__setitem__(k, req("PUT", f"{id3}?ini={a * BLOCO}", dados[a * BLOCO:b * BLOCO], ana,
+                                                                         {"X-DCubic-Sha": ",".join(shas[a:b])})[0]), args=x)
+          for x in (("a", 0, 1), ("b", 1, 2), ("c", 2, 3))]
+    [t.start() for t in ts]
+    [t.join() for t in ts]
+    assert res == {"a": 200, "b": 200, "c": 200} and req("GET", id3, token=ana)[1]["mapa"] == "111", res
+    assert req("POST", f"{id3}/concluir", js({"hash": composto}), ana)[1]["ok"]
+    apagar(id3, "ana")
     # limpeza de 24 h e token revogado
     st_, r = req("POST", "iniciar", js({**novo, "chave": "velho"}), ana)
     for ext in (".part", ".sha", ".json"):
@@ -564,4 +575,4 @@ if __name__ == "__main__":
     revogar_token(ana)
     assert req("POST", "iniciar", js(novo), ana)[0] == 403
     print("envio_http OK: protocolo, limite de 3 GB, disco 3×, SHA-256 por bloco, retomada, hash final, "
-          "corrupção, cancelar, limpeza de 24 h e token")
+          "corrupção, partes em paralelo, cancelar, limpeza de 24 h e token")

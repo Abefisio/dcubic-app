@@ -98,6 +98,28 @@ O teste autenticado da VPS rodou num contêiner temporário com a **mesma imagem
 acessado por túnel SSH e com um usuário de teste descartável: não existe usuário `demo` no `users.yaml`
 real, e o teste não cria contas nem usa senhas reais. O contêiner e os dados do teste foram removidos.
 
+## Velocidade do envio (diagnóstico de 29/10/2026)
+
+O envio de 3 GB levava ~18 min. O gargalo medido **não é o computador nem o servidor**, é o trajeto de rede
+do Mac até a VPS (Frankfurt, RTT ~220 ms): uma conexão TCP sobe só ~1,0–1,7 MB/s, enquanto o mesmo Mac sobe
+10–20 MB/s para a Cloudflare (RTT 12 ms).
+
+| Medida | Resultado |
+|---|---|
+| Subida Mac -> VPS, HTTPS direto pelo Traefik, 1 conexão (curl) | 1,4 / 1,7 / 1,5 MB/s |
+| O mesmo por túnel SSH | 1,2 / 2,0 / 1,6 MB/s (o túnel **não** distorceu o teste 13) |
+| Vários curl simultâneos (conexões TCP separadas) | 1 -> ~0,9 MB/s; 16 -> 3–5 MB/s |
+| No navegador (HTTP/2: todos os pedidos dividem 1 conexão) | 1 a 16 pedidos: 0,5–1,8 MB/s; WebSocket x8: 1,7 MB/s |
+| SHA-256 no navegador / na VPS | 1,6–1,9 GB/s / 1,4 GB/s (não é gargalo; Web Worker dispensável) |
+| gzip no navegador (CompressionStream) | ~50 MB/s de entrada, sem ganho em paralelo; razão 1,47 no sintético, 2,3 em malha tipo CBCT |
+| CPU da VPS durante o envio | 2,5% (de 1 vCPU) |
+
+O sintético comprime 1,47x em 85% do arquivo e 6,5x no resto (por isso os últimos 15% do teste 13 foram rápidos):
+os bytes na rede (~1,9 GB) a ~1,75 MB/s explicam os 18 min. Depois de 4 pedidos em paralelo (`PARALELO` no
+componente) o ganho na rede real foi de ~5% (a banda de uma conexão é o teto); no Mac sem rede o componente
+foi de ~13 para ~23 MB/s. Aceleração relevante depende de **reduzir bytes** ou **encurtar o trajeto**
+(proxy da Cloudflare, VPS no Brasil, redução da malha no navegador): ver o relatório de 29/10/2026.
+
 ## Como atualizar e reverter
 
 - Atualizar a VPS: ver `docs/DEPLOY-VPS.md` (`git -C app pull --ff-only` e `docker compose up -d --build`).
