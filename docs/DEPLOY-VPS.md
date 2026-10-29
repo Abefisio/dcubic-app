@@ -32,7 +32,7 @@ Observações:
 - Labels do Traefik: router/service `dcubic`, entrypoint `websecure`, certresolver `letsencrypt`, porta 8501.
 - Variáveis de ambiente do compose: `DCUBIC_ENVIO_GRANDE=1` e `DCUBIC_UPLOAD_DIR=/dados/uploads`.
 - O envio grande usa rotas `/dcubic-envio/...` registradas **dentro do próprio servidor do Streamlit** (mesma
-  porta 8501): não há router, porta nem middleware extra no Traefik. Cada parte tem até 32 MiB e o navegador
+  porta 8501): não há router, porta nem middleware extra no Traefik. Cada parte tem até 16 MiB e o navegador
   ajusta o tamanho para cada pedido levar ~20 s, abaixo do corte de 60 s do entrypoint `websecure`
   (padrão do Traefik v3, que não foi alterado).
 

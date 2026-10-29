@@ -30,8 +30,18 @@ Relatório completo: `~/Desktop/RELATORIOS-CLAUDE/cloudflare-teste-medicao.txt`.
 ## Cuidados
 
 - Não ligar "Always Use HTTPS" nem criar redirect http→https na Cloudflare para `*.dcubic`: isso quebra a renovação do certificado de origem (vence em 27/01/2027 e o Traefik renova sozinho).
-- Partes de envio devem ficar abaixo de 100 MB (limite por pedido do plano gratuito). Hoje elas têm até 32 MiB.
+- Partes de envio devem ficar abaixo de 100 MB (limite por pedido do plano gratuito). Hoje elas têm até 16 MiB (ver abaixo).
 - Rocket Loader e Bot Fight Mode devem permanecer desligados.
+
+## Envio real em produção e redução da parte para 16 MiB
+
+Em 29/10/2026, às 17:42, `feat/envio-rapido` (e1fec9f) foi publicada na VPS. O envio real de 300 MiB pela Cloudflare, com login e 4 partes em paralelo, levou **61,8 s (5,13 MB/s)**. Foram 13 partes, todas com status 200, e o SHA-256 conferiu no servidor. A parte mais lenta, de 32 MiB, levou **54 s**, muito perto do corte de 60 s do Traefik (`readTimeout` padrão do entrypoint, que não alteramos).
+
+Decisão: o teto da parte no navegador (`assets/envio_grande/index.html`, `PARTE_MAX`) caiu de 32 MiB para **16 MiB**, mantidos os 4 PUTs em paralelo. Nessa mesma velocidade, uma parte de 16 MiB leva ~27 s, com folga para o corte. O servidor continua aceitando até 32 MiB, para que abas abertas com a versão anterior sigam funcionando. Uma parte que falha (queda de rede, tempo esgotado no cliente, 5xx do proxy como 502/504/524, 408/429) volta para a fila e é reenviada automaticamente, depois de consultar o servidor sobre quais blocos já chegaram.
+
+Relatórios: `~/Desktop/RELATORIOS-CLAUDE/envio-rapido-publicacao.txt` e `~/Desktop/RELATORIOS-CLAUDE/envio-16mib.txt`.
+
+O usuário temporário do teste foi removido. Antes, o arquivo de usuários foi copiado para `/docker/dcubic/segredos/users.yaml.bak-20261029-204328` (backup mantido na VPS); depois do teste, `/docker/dcubic/segredos/users.yaml` foi restaurado e conferido por sha256 contra esse backup.
 
 ## Como reverter
 

@@ -9,7 +9,7 @@
      Fluxo: escolher/arrastar -> lista dos arquivos + botão "Importar" -> só então começa o envio, com o
      aviso "Loading…" piscando (e o texto de progresso) até o servidor terminar.
      Modo HTTP (args.modo = "http", DCUBIC_ENVIO_GRANDE=1 na VPS): até 3 GB por arquivo, partes de até
-     32 MiB direto para o disco do servidor (modules/envio_http.py), com retomada, % e tempo estimado,
+     16 MiB direto para o disco do servidor (modules/envio_http.py), com retomada, % e tempo estimado,
      SHA-256 por bloco e Cancelar que apaga o parcial. Sem esse argumento: o envio pelo websocket acima. -->
 <style>
   body { margin: 0; font: 14px sans-serif; color: var(--texto, #e6edf6); background: transparent; }
@@ -152,11 +152,13 @@ async function mandar(ini) {
 }
 
 // ── Modo HTTP (DCUBIC_ENVIO_GRANDE=1, VPS): até 3 GB por arquivo, direto para o disco do servidor ──
-// Partes de até 32 MiB (alinhadas a 1 MiB) por PUT em /dcubic-envio (modules/envio_http.py), com o
+// Partes de até 16 MiB (alinhadas a 1 MiB) por PUT em /dcubic-envio (modules/envio_http.py), com o
 // SHA-256 de cada bloco de 1 MiB. Queda de conexão: espera, pergunta ao servidor quais blocos já
 // chegaram e manda só os que faltam (escolher o mesmo arquivo de novo também retoma). O tamanho da
-// parte acompanha a velocidade (~20 s por pedido: o proxy da VPS corta pedidos com mais de 60 s).
-const BLOCO = MB, PARTE_MAX = 32 * MB, GB = 1024 * MB, PARALELO = 4;   // PARALELO: pedidos PUT ao mesmo tempo
+// parte acompanha a velocidade (~20 s por pedido: o proxy da VPS corta pedidos com mais de 60 s). Teto de
+// 16 MiB (era 32): no envio real pela Cloudflare (29/10) uma parte de 32 MiB levou 54 s, perto do corte.
+// O servidor continua aceitando até 32 MiB (abas abertas com a versão anterior seguem funcionando).
+const BLOCO = MB, PARTE_MAX = 16 * MB, GB = 1024 * MB, PARALELO = 4;   // PARALELO: pedidos PUT ao mesmo tempo
 let http = null;   // {token, limite} vindos do app
 let ctl = null;    // envio HTTP em andamento: {ids (prontos), id (atual), cancelado, xhrs (pedidos em voo)}
 const gb = (b) => (b / GB).toFixed(2).replace(".", ",");

@@ -428,7 +428,7 @@ _componente_envio_grande = _components.declare_component(
 _chave_envio_grande = lambda: f"envio_grande_{st.session_state.get('_eg_n', 0)}"
 
 # ENVIO GRANDE (VPS, DCUBIC_ENVIO_GRANDE=1; docs/ENVIO-3GB.md): até 3 GB por arquivo. O componente manda
-# partes de até 32 MiB por HTTP para rotas registradas no servidor do próprio Streamlit
+# partes de até 16 MiB por HTTP para rotas registradas no servidor do próprio Streamlit
 # (modules/envio_http.py), gravadas direto em DCUBIC_UPLOAD_DIR; o websocket e a RAM do app ficam de fora.
 # Sem a variável (Streamlit Cloud): o envio pelo websocket abaixo, como antes.
 if _ENVIO_GRANDE:

@@ -17,7 +17,7 @@ pelo websocket nem pela sessão.
 | Rota | O que faz |
 |---|---|
 | `POST /dcubic-envio/iniciar` | confere extensão, limite de 3 GB e disco livre (≥ 3 × o arquivo); retoma um envio igual já começado |
-| `PUT /dcubic-envio/<id>?ini=<byte>` | parte de até 32 MiB (alinhada a 1 MiB, gzip opcional), gravada no lugar certo do arquivo |
+| `PUT /dcubic-envio/<id>?ini=<byte>` | parte de até 16 MiB pelo navegador, 32 MiB aceitos pelo servidor (alinhada a 1 MiB, gzip opcional), gravada no lugar certo do arquivo |
 | `GET /dcubic-envio/<id>` | mapa dos blocos de 1 MiB que já estão no disco (retomada) |
 | `POST /dcubic-envio/<id>/concluir` | relê o arquivo, confere o tamanho, o SHA-256 de cada bloco e o hash composto |
 | `DELETE /dcubic-envio/<id>` | Cancelar: apaga o parcial (ou o arquivo pronto) |
@@ -33,7 +33,7 @@ pelo websocket nem pela sessão.
 - **Retomada:** se a conexão cai, o componente espera (até a rede voltar), pergunta ao servidor o
   mapa e manda só os blocos que faltam. Se a página for recarregada, basta escolher o mesmo arquivo
   de novo (mesmo nome, tamanho e data): o envio continua de onde parou.
-- **Tamanho da parte:** começa com 8 MiB e se ajusta à velocidade medida, até 32 MiB, para cada
+- **Tamanho da parte:** começa com 8 MiB e se ajusta à velocidade medida, até 16 MiB, para cada
   pedido levar uns 20 s. O Traefik v3 da VPS corta pedidos com mais de 60 s (`readTimeout` padrão
   do entrypoint, que não alteramos): em conexões lentas as partes ficam menores e o envio não trava.
 - **Tela:** barra de progresso com %, MB/s e tempo estimado, e o aviso "Loading…". O botão
