@@ -58,12 +58,23 @@ def _limpar_cache_na_partida():
     mais de 2 dias. Falha na limpeza nunca impede o app de abrir."""
     try:
         from modules import stl_compactar as _c
-        return len(_c.limpar_cache_antigo(dias=2))
+        _n = len(_c.limpar_cache_antigo(dias=2))
+        if _c.GRANDE:   # envio grande: parciais, prontos e cache com mais de 24 h (DCUBIC_UPLOAD_DIR)
+            from modules import envio_http as _h
+            _n += len(_h.limpar_antigos())
+        return _n
     except Exception:
         return 0
 
 
 _limpar_cache_na_partida()
+
+# Envio grande (VPS, DCUBIC_ENVIO_GRANDE=1): rotas /dcubic-envio registradas no servidor do Streamlit já
+# na 1ª visita (antes do login), sempre protegidas por token de sessão logada (modules/envio_http.py).
+_ENVIO_GRANDE = os.environ.get("DCUBIC_ENVIO_GRANDE") == "1"
+if _ENVIO_GRANDE:
+    from modules import envio_http as _http
+    _http.registrar()
 
 _MAX_VOXELS = 12_000_000  # ponytail: ajuste conforme RAM disponível (Streamlit Cloud ~1 GB)
 
@@ -232,6 +243,9 @@ elif _auth_status is True:
     st.session_state.pop("_login_falhas", None)
 
 if _auth_status is not True:
+    if st.session_state.get("_eg_token"):   # saiu (logout/inatividade): o token do envio grande deixa de valer
+        from modules import envio_http as _http
+        _http.revogar_token(st.session_state.pop("_eg_token"))
     _cabecalho_login()
     _falhas = st.session_state.get("_login_falhas", 0)
     if st.session_state.get("_idle_logout"):
@@ -413,6 +427,14 @@ _componente_envio_grande = _components.declare_component(
     "envio_grande", path=os.path.join(_DC_ASSETS, "envio_grande"))
 _chave_envio_grande = lambda: f"envio_grande_{st.session_state.get('_eg_n', 0)}"
 
+# ENVIO GRANDE (VPS, DCUBIC_ENVIO_GRANDE=1; docs/ENVIO-3GB.md): até 3 GB por arquivo. O componente manda
+# partes de até 32 MiB por HTTP para rotas registradas no servidor do próprio Streamlit
+# (modules/envio_http.py), gravadas direto em DCUBIC_UPLOAD_DIR; o websocket e a RAM do app ficam de fora.
+# Sem a variável (Streamlit Cloud): o envio pelo websocket abaixo, como antes.
+if _ENVIO_GRANDE:
+    st.session_state["_eg_token"] = _http.emitir_token(st.session_state.get("username"),
+                                                       st.session_state.get("_eg_token"))
+
 
 def _apagar_lote():
     """Erro ou Cancelar no meio de vários arquivos: apaga os já recebidos (recebidos/)."""
@@ -454,11 +476,36 @@ def _envio_grande_recebido():
     st.session_state["_eg_fim"] = True
 
 
+def _envio_http_recebido():
+    """Modo grande: os arquivos já estão no disco, conferidos (tamanho + SHA-256) pelo envio_http;
+    aqui entram na etapa 2. O Cancelar é resolvido no navegador (apaga no servidor)."""
+    _v = st.session_state.get(_chave_envio_grande())
+    if not isinstance(_v, dict) or not _v.get("prontos"):
+        return
+    _usr = st.session_state.get("username")
+    try:
+        _rec = [_r for _id in _v["prontos"] for _r in _http.recebidos(_id, _usr)]
+        if not _rec:
+            raise ValueError("Nenhum arquivo .stl encontrado no envio.")
+        st.session_state["_upl_recebidos"] = _rec
+        st.session_state["_eg_prontos"] = list(_v["prontos"])
+    except Exception as _ee:
+        for _id in _v["prontos"]:
+            _http.apagar(_id, _usr)
+        st.session_state["_upl_msg"] = ("erro", str(_ee))
+    st.session_state["_eg_n"] = st.session_state.get("_eg_n", 0) + 1
+    st.session_state["_eg_fim"] = True
+
+
 @st.fragment
 def _envio_grande():
     """Cada fatia reexecuta só este fragmento; o app inteiro só roda de novo no fim."""
     if st.session_state.pop("_eg_fim", False):
         st.rerun(scope="app")
+    if _ENVIO_GRANDE:
+        _componente_envio_grande(modo="http", token=st.session_state["_eg_token"], limite_bytes=_http.LIMITE_BYTES,
+                                 key=_chave_envio_grande(), on_change=_envio_http_recebido, default=None)
+        return
     _eg = st.session_state.get("_eg")
     _componente_envio_grande(id=_eg["id"] if _eg else None, ack=_eg["n"] if _eg else 0,
                              limite_mb=_LIMITE_DRIVE_MB, key=_chave_envio_grande(),
@@ -467,8 +514,13 @@ def _envio_grande():
 
 with st.sidebar:
     _envio_grande()
-st.sidebar.caption(f"Arraste ou escolha os arquivos .stl/.zip do mesmo dente (até {_LIMITE_DRIVE_MB} MB "
-                   "cada). Malhas acima de 500.000 triângulos são reduzidas automaticamente.")
+if _ENVIO_GRANDE:
+    st.sidebar.caption("Arraste ou escolha os arquivos .stl/.zip do mesmo dente (até 3 GB cada). Acima de "
+                       "1,5 milhão de triângulos (somando as estruturas), a malha é reduzida automaticamente, "
+                       "preservando canais finos.")
+else:
+    st.sidebar.caption(f"Arraste ou escolha os arquivos .stl/.zip do mesmo dente (até {_LIMITE_DRIVE_MB} MB "
+                       "cada). Malhas acima de 500.000 triângulos são reduzidas automaticamente.")
 
 # Alternativa pelo link do Google Drive: baixado direto para o disco do servidor (não passa
 # pelo navegador) e entregue ao MESMO pós-recebimento do envio.
@@ -507,7 +559,8 @@ if "_upl_recebidos" in st.session_state:
         _load_stl_from_paths.clear(); _trimesh_cached.clear(); _interior_cached.clear()
         # etapa 2 (envio e Drive): checagem de memória D1 (malhas REDUZIDAS + RSS, exceto macOS) + compactação
         _res = _cmp.processar_recebidos(
-            _recebidos, progresso=lambda f, t: _barra.progress(min(float(f), 1.0), text=t))
+            _recebidos, pasta=_http.pasta_cache() if _ENVIO_GRANDE else _cmp.PASTA_CACHE,
+            progresso=lambda f, t: _barra.progress(min(float(f), 1.0), text=t))
         _trocar_dente([_r["caminho"] for _r in _res])
         st.session_state["_upl_msg"] = ("ok", _res)
     except Exception as _ue:
@@ -516,8 +569,9 @@ if "_upl_recebidos" in st.session_state:
                 os.remove(_cam)
         st.session_state["_upl_msg"] = ("erro", str(_ue))
     del _recebidos
-    import gc as _gc
-    _gc.collect()
+    for _id in st.session_state.pop("_eg_prontos", []):   # pastas dos envios prontos (o original já saiu)
+        _http.apagar(_id, st.session_state.get("username"))
+    _cmp.devolver_memoria()   # gc + devolve ao sistema o que o alocador reteve na compactação
     st.rerun()
 _upl_msg = st.session_state.get("_upl_msg")
 if _upl_msg and _upl_msg[0] == "erro":
@@ -531,7 +585,10 @@ elif _upl_msg:
                 f"**{_r['nome']}** — Malha original: {_n(_r['tri_antes'])} triângulos → reduzida "
                 f"para {_n(_r['tri_depois'])} para visualização. "
                 f"({_mb(_r['bytes_antes'])} → {_mb(_r['bytes_depois'])}"
-                + (", do cache)" if _r["cache"] else ")"))
+                + (", do cache)" if _r["cache"] else ")")
+                + (f" Volume: {100 * (_r['volume_reduzida'] - _r['volume_original']) / _r['volume_original']:+.2f}% "
+                   "em relação à malha original.".replace(".", ",", 1)
+                   if _r.get("volume_original") and _r.get("volume_reduzida") is not None else ""))
         else:
             st.sidebar.caption(f"**{_r['nome']}**: {_n(_r['tri_antes'])} triângulos (sem redução), "
                                f"{_mb(_r['bytes_depois'])}")
@@ -1102,6 +1159,14 @@ html,body{margin:0;padding:0;overflow:hidden;height:100%;background:#0f0f0f;colo
         else:
             st.info("Ative ao menos uma estrutura na barra lateral para visualizar.")
 
+    def _original(_nome):
+        """<malha reduzida>.original.json (stl_compactar): triângulos e volume da malha ORIGINAL."""
+        try:
+            with open(os.path.splitext(_por_nome[_nome][0])[0] + ".original.json", encoding="utf-8") as _f:
+                return json.load(_f)
+        except Exception:
+            return {}
+
     st.subheader("Métricas em unidades nativas do STL — calibração de voxel pendente (não são mm³)")
     st.dataframe(
         [
@@ -1111,8 +1176,14 @@ html,body{margin:0;padding:0;overflow:hidden;height:100%;background:#0f0f0f;colo
                 "Área (un. nativas)": round(m["area_native"], 2),
                 "Faces (original)": m["n_faces"],
                 "Faces (exibição)": m["n_faces_display"],
+                **({"Volume da malha original (un. nativas)": round(_o["volume"], 2),
+                    "Faces do arquivo enviado": _o.get("tri"),
+                    "Diferença de volume reduzida × original (%)":
+                        round(100 * (_o["volume_reduzida"] - _o["volume"]) / _o["volume"], 3)}
+                   if _o.get("volume") and _o.get("volume_reduzida") is not None else {}),
             }
             for m in _stl_ok
+            for _o in (_original(m["name"]),)
         ],
         width="stretch",
     )

@@ -33,8 +33,12 @@ import zipfile
 
 import numpy as np
 
-ALVO_TRIANGULOS = 500_000          # por estrutura; só reduz acima disso (≈ 25 MB em STL binário)
-LIMITE_SAIDA_BYTES = 30 * 1024 * 1024   # mesmo teto de 30 MB do app (commit 76d235f)
+# Envio grande (VPS, DCUBIC_ENVIO_GRANDE=1, docs/ENVIO-3GB.md): arquivos de até 3 GB; o ENVIO inteiro
+# (todas as estruturas do dente) fica em até 1,5 milhão de triângulos, com agrupamento adaptativo
+# que refina as células onde a superfície se fecha (canais finos). Sem a variável: como antes.
+GRANDE = os.environ.get("DCUBIC_ENVIO_GRANDE") == "1"
+ALVO_TRIANGULOS = 1_500_000 if GRANDE else 500_000   # grande: soma do envio; senão: por estrutura
+LIMITE_SAIDA_BYTES = 30 * 1024 * 1024   # mesmo teto de 30 MB do app (commit 76d235f); grande: só o alvo
 BLOCO_TRIANGULOS = 250_000   # blocos menores = pico menor (1 milhão custava ~260 MB de trabalho)
 # Memória: o app grava o envio em disco e libera os bytes do Streamlit ANTES de compactar
 # (app.py, envio em duas etapas); a compactação usa ~TRABALHO_MB por bloco. O processo
@@ -45,8 +49,8 @@ TRABALHO_MB = 150
 # medida no teste de 21/10/2026 (ver docs/DECISOES-REFINO-CORTES-UPLOAD.md). Recalibre se o 3D mudar.
 BYTES_APP_POR_TRIANGULO = 400
 LIMITE_LOCAL_MB = 2048   # teto local: servidor iniciado com --server.maxUploadSize 2048 (docs/DECISOES.md)
-LIMITE_SEGURO_MB = int(os.environ.get("DCUBIC_LIMITE_MEMORIA_MB", "800"))
-LIMITE_MEMBRO_ZIP = 2 * 1024 ** 3   # recusa zip acima de 2 GB descompactados (por membro e na soma)
+LIMITE_SEGURO_MB = int(os.environ.get("DCUBIC_LIMITE_MEMORIA_MB", "1500" if GRANDE else "800"))
+LIMITE_MEMBRO_ZIP = (3 if GRANDE else 2) * 1024 ** 3   # recusa zip acima de 2 GB (grande: 3 GB) descompactados
 # STL real comprime ~3–10:1 (zip de teste com 2 STL: 4,6:1); 1000:1 é "zip-bomba" (Fase 1: 51 KB -> 52 MB).
 RAZAO_MAX_ZIP = 100
 PASTA_CACHE = os.path.join(tempfile.gettempdir(), "dcubic_upload_cache")
@@ -73,6 +77,21 @@ def rss_mb():
         return None
 
 
+def devolver_memoria() -> None:
+    """Devolve ao sistema a memória já liberada que o alocador do C retém (Linux: malloc_trim;
+    macOS: malloc_zone_pressure_relief). Sem isso, a RSS do processo fica bem acima da memória em
+    uso depois de cada bloco grande do numpy (medido: 298 MB em uso x 935 MB de RSS no Mac)."""
+    gc.collect()
+    try:
+        import ctypes
+        if sys.platform.startswith("linux"):
+            ctypes.CDLL("libc.so.6").malloc_trim(0)
+        elif sys.platform == "darwin":
+            ctypes.CDLL("libc.dylib").malloc_zone_pressure_relief(None, 0)
+    except Exception:
+        pass
+
+
 def checar_tamanho(bytes_envio: int, limite_mb: int = LIMITE_LOCAL_MB) -> None:
     """Etapa 1 do envio: recusa, com mensagem clara, o envio acima do limite efetivo
     (DCUBIC_MAX_UPLOAD_MB; 200 MB no Streamlit Cloud). Não olha o RSS (os bytes do envio
@@ -97,7 +116,8 @@ def triangulos_no_arquivo(caminho: str) -> int:
 
 def memoria_necessaria_mb(recebidos, alvo: int = ALVO_TRIANGULOS) -> float:
     """Trabalho da compactação + malhas REDUZIDAS abertas no app (não o arquivo bruto)."""
-    tri = sum(min(triangulos_no_arquivo(cam), alvo) for _nome, cam, _sha, _tam in recebidos)
+    tri = [triangulos_no_arquivo(cam) for _nome, cam, _sha, _tam in recebidos]
+    tri = min(sum(tri), alvo) if GRANDE else sum(min(t, alvo) for t in tri)
     return TRABALHO_MB + tri * BYTES_APP_POR_TRIANGULO / 1024 ** 2
 
 
@@ -163,14 +183,15 @@ def _checar_zip(z, pasta: str) -> None:
     for m in membros:
         base = os.path.basename(m.filename)
         if m.file_size > LIMITE_MEMBRO_ZIP:
-            raise ValueError(f"'{base}' tem mais de 2 GB descompactado.")
+            raise ValueError(f"'{base}' tem mais de {LIMITE_MEMBRO_ZIP // 1024 ** 3} GB descompactado.")
         if m.file_size > 1024 ** 2 and m.file_size > RAZAO_MAX_ZIP * max(m.compress_size, 1):
             raise ValueError(f"'{base}' tem compressão anormal ({m.file_size // max(m.compress_size, 1)}:1) e "
                              "não parece um STL de verdade (possível \"zip-bomba\"). O .zip foi recusado: "
                              "envie os arquivos .stl originais, compactados normalmente.")
     precisa = sum(m.file_size for m in membros)
     if precisa > LIMITE_MEMBRO_ZIP:
-        raise ValueError(f"O .zip descompactado tem {precisa / 1024 ** 2:.0f} MB e passa do limite de 2 GB.")
+        raise ValueError(f"O .zip descompactado tem {precisa / 1024 ** 2:.0f} MB e passa do limite de "
+                         f"{LIMITE_MEMBRO_ZIP // 1024 ** 3} GB.")
     os.makedirs(pasta, exist_ok=True)
     livre = shutil.disk_usage(pasta).free
     if 1.1 * precisa > livre:
@@ -417,9 +438,32 @@ def limpar_cache_antigo(pasta: str = PASTA_CACHE, dias: float = 2) -> list:
 
 
 def processar_recebidos(recebidos, pasta: str = PASTA_CACHE, progresso=None):
-    """Pós-recebimento comum ao envio e ao Drive: checagem de memória (D1) + compactação."""
+    """Pós-recebimento comum ao envio e ao Drive: checagem de memória (D1) + compactação.
+    Envio grande: a compactação roda num processo Python à parte (só numpy), e a memória dela volta
+    inteira ao sistema no fim; o servidor do Streamlit não cresce nem fica com o heap fragmentado."""
     checar_memoria(recebidos)
-    return compactar_recebidos(recebidos, pasta, progresso=progresso)
+    if not GRANDE:
+        return compactar_recebidos(recebidos, pasta, progresso=progresso)
+    import subprocess
+    p = progresso or (lambda frac, texto: None)
+    proc = subprocess.Popen([sys.executable, "-m", "modules.stl_compactar", "--processar"],
+                            cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                            stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+    proc.stdin.write(json.dumps({"recebidos": [list(r) for r in recebidos], "pasta": pasta}))
+    proc.stdin.close()
+    fim = None
+    for linha in proc.stdout:   # uma linha JSON por evento: ["p", fração, texto] | ["ok", res] | ["erro", tipo, msg]
+        m = json.loads(linha)
+        if m[0] == "p":
+            p(m[1], m[2])
+        else:
+            fim = m
+    proc.wait()
+    if not fim:
+        raise ValueError(f"A redução da malha foi interrompida (código {proc.returncode}). Tente novamente.")
+    if fim[0] == "erro":
+        raise (MemoriaInsuficiente if fim[1] == "MemoriaInsuficiente" else ValueError)(fim[2])
+    return fim[1]
 
 
 # ── 2. Lendo ────────────────────────────────────────────────────────────────────
@@ -463,12 +507,12 @@ def ascii_para_binario(origem: str, destino: str) -> int:
     return n
 
 
-def _blocos(caminho: str):
+def _blocos(caminho: str, bloco: int = BLOCO_TRIANGULOS):
     """Itera (início, vértices float32 (b,3,3) com coordenadas finitas). Cada bloco é um
     np.memmap só do seu trecho, desfeito em seguida: o arquivo nunca fica todo mapeado."""
     n = (os.path.getsize(caminho) - 84) // 50
-    for i in range(0, n, BLOCO_TRIANGULOS):
-        b = min(BLOCO_TRIANGULOS, n - i)
+    for i in range(0, n, bloco):
+        b = min(bloco, n - i)
         mm = np.memmap(caminho, dtype=_DT, mode="r", offset=84 + 50 * i, shape=(b,))
         v = np.array(mm["v"], dtype=np.float32)   # float32 como no STL: metade da RAM
         del mm
@@ -477,64 +521,253 @@ def _blocos(caminho: str):
 
 
 def medir(caminho_bin: str) -> dict:
-    """Área total, caixa envolvente e nº de triângulos (leitura em blocos)."""
+    """Área total, volume (teorema da divergência, unidades do STL³), caixa envolvente e nº de
+    triângulos (leitura em blocos)."""
     n = (os.path.getsize(caminho_bin) - 84) // 50
-    area, lo, hi = 0.0, np.full(3, np.inf), np.full(3, -np.inf)
+    area, vol, lo, hi = 0.0, 0.0, np.full(3, np.inf), np.full(3, -np.inf)
     for _, v in _blocos(caminho_bin):
         if len(v):
             area += 0.5 * float(np.linalg.norm(np.cross(v[:, 1] - v[:, 0], v[:, 2] - v[:, 0]), axis=1).sum(dtype=np.float64))
+            vol += _volume(v)
             lo = np.minimum(lo, v.min(axis=(0, 1)))
             hi = np.maximum(hi, v.max(axis=(0, 1)))
-    return {"n": int(n), "area": float(area), "min": lo.tolist(), "max": hi.tolist()}
+    return {"n": int(n), "area": float(area), "volume": abs(vol), "min": lo.tolist(), "max": hi.tolist()}
+
+
+def _volume(tri) -> float:
+    """Volume com sinal de triângulos (k,3,3): soma de v0·(v1×v2)/6, em float64."""
+    t = np.asarray(tri, dtype=np.float64)
+    return float(np.einsum("ij,ij->", t[:, 0], np.cross(t[:, 1], t[:, 2]))) / 6
 
 
 # ── 3. Compactando ──────────────────────────────────────────────────────────────
 
-def grade_comum(infos: list, alvo: int = ALVO_TRIANGULOS):
+def grade_comum(infos: list, alvo: int = ALVO_TRIANGULOS, total: bool = False):
     """Origem e célula únicas para o envio. A célula é a maior entre as estruturas
-    (nenhuma passa do alvo); estruturas menores ficam com a mesma resolução absoluta."""
+    (nenhuma passa do alvo); estruturas menores ficam com a mesma resolução absoluta.
+    total=True (envio grande): a célula é calculada para a SOMA das áreas caber no alvo."""
     origem = np.min([i["min"] for i in infos], axis=0)
-    celula = max(np.sqrt(_K_GRADE * i["area"] / alvo) for i in infos if i["area"] > 0)
+    if total:
+        celula = np.sqrt(_K_GRADE * sum(i["area"] for i in infos) / alvo)
+    else:
+        celula = max(np.sqrt(_K_GRADE * i["area"] / alvo) for i in infos if i["area"] > 0)
     return origem, float(celula)
 
 
-def compactar(caminho_bin: str, origem, celula: float, destino: str) -> int:
-    """Agrupamento de vértices (célula = média dos vértices). Grava STL binário. -> nº triângulos."""
-    origem32, celula32 = np.asarray(origem, dtype=np.float32), np.float32(celula)
-    chaves, somas, contagens, tris = [], [], [], []
+# ── 3b. Agrupamento ADAPTATIVO (envio grande): preserva canais e paredes finas ──────
+# Na grade comum, um canal mais fino que a célula cai inteiro numa célula e vira um ponto (some).
+# 1ª passada: por célula da grade base, soma VETORIAL das normais (ponderadas pela área) e soma
+# das áreas. A detecção olha blocos 2×2×2 de células (um canal mais fino que a célula sempre cabe
+# inteiro em algum bloco, mesmo cortado pelas bordas da grade): superfície lisa -> razão ~1; canal
+# fino / parede fina / bolha (a superfície se fecha dentro do bloco) -> razão ~0 -> as células do
+# bloco são subdivididas 2-16× por eixo, com >= 4 subcélulas no diâmetro estimado do canal.
+# 2ª passada: cada VÉRTICE usa a subcélula da sua célula (a chave depende só da posição: sem
+# rachaduras entre células finas e grossas). Chave: 3×16 bits da célula base + nível + subcélula.
+# O ponto de cada agrupamento é o de menor erro quadrático aos planos dos triângulos (QEM,
+# Lindstrom 2000), não a média: a média encolhe canais finos e superfícies curvas.
+_BITS_BASE = 16          # até 65.536 células por eixo na grade base
+LIMIAR_FINA = 0.6        # razão |Σ normal·área| / Σ área (bloco 2×2×2) abaixo da qual refina
+FATOR_MAX = 16           # subdivisão máxima por eixo (célula / 16)
+_VIZ = np.array([(a, b, c) for a in (0, 1) for b in (0, 1) for c in (0, 1)], dtype=np.int64)
+
+
+def _chave_base(ijk):
+    return (ijk[..., 0] << 32) | (ijk[..., 1] << 16) | ijk[..., 2]
+
+
+def _ijk_base(k):
+    return np.stack([k >> 32, (k >> 16) & 0xFFFF, k & 0xFFFF], -1)
+
+
+def estatistica(caminho_bin: str, origem, celula: float):
+    """1ª passada. -> (chaves base ordenadas, Σ (2·área·normal) (m,3), Σ 2·área (m,))."""
+    o = np.asarray(origem, dtype=np.float64)
+    ks, ss, aa = [], [], []
     for _, v in _blocos(caminho_bin):
-        w = v - origem32
-        w /= celula32
-        np.floor(w, out=w)
-        ijk = w.astype(np.int32)   # (b,3,3)
-        del w
-        np.clip(ijk, 0, 2 ** 20 - 1, out=ijk)
-        k = ijk[..., 0].astype(np.int64) << 40   # (b,3) chave da célula
-        k |= ijk[..., 1].astype(np.int64) << 20
-        k |= ijk[..., 2]
-        del ijk
+        cr = np.cross(v[:, 1] - v[:, 0], v[:, 2] - v[:, 0]).astype(np.float64)   # 2·área·normal
+        k = _chave_base(np.floor((v.mean(axis=1) - o) / celula).astype(np.int64))  # pelo centróide
+        uk, inv = np.unique(k, return_inverse=True)
+        ks.append(uk)
+        ss.append(np.stack([np.bincount(inv, cr[:, d], len(uk)) for d in range(3)], 1))
+        aa.append(np.bincount(inv, np.linalg.norm(cr, axis=1), len(uk)))
+        del cr, k, inv, v
+        if len(ks) >= _CONSOLIDAR:
+            ks, ss, aa = _somar_por_chave(ks, ss, aa)
+            devolver_memoria()
+    (uk,), (s,), (a,) = _somar_por_chave(ks, ss, aa)
+    return uk, s, a
+
+
+BLOCO_ADAPTATIVO = 100_000   # adaptativo: blocos menores (chaves e quádricas em float64 por canto)
+_CONSOLIDAR = 32   # adaptativo: junta os parciais a cada 32 blocos (memória ~ malha reduzida, não o arquivo)
+
+
+def _somar_por_chave(chaves, *valores):
+    """Listas de (chaves únicas do bloco, somas) -> ([chaves], [somas]) com uma entrada por chave."""
+    uk, inv = np.unique(np.concatenate(chaves), return_inverse=True)
+    out = [[uk]]
+    for lista in valores:
+        x = np.concatenate(lista)
+        out.append([np.stack([np.bincount(inv, x[:, j], len(uk)) for j in range(x.shape[1])], 1) if x.ndim > 1
+                    else np.bincount(inv, x, len(uk))])
+    return out
+
+
+def _sem_repetidos(tris):
+    """Triângulos (chaves) repetidos, em qualquer orientação, saem; fica a 1ª ocorrência."""
+    t = np.concatenate(tris)
+    _, primeiro = np.unique(np.sort(t, axis=1), axis=0, return_index=True)
+    return t[np.sort(primeiro)]
+
+
+def _achar(uk, ijk):
+    """Posição de cada célula ijk (n,3) em uk, ou -1."""
+    ok = ((ijk >= 0) & (ijk < 2 ** _BITS_BASE)).all(axis=1)
+    k = _chave_base(np.where(ok[:, None], ijk, 0))
+    pos = np.minimum(np.searchsorted(uk, k), len(uk) - 1)
+    return np.where(ok & (uk[pos] == k), pos, -1)
+
+
+def fatores(uk, soma, area2, celula: float):
+    """Subdivisão por célula: 1 (lisa) ou 2..16 (canal/parede fina, detectado no bloco 2×2×2)."""
+    ijk = _ijk_base(uk)
+    s8, a8 = np.zeros_like(soma), np.zeros_like(area2)
+    for d in _VIZ:   # bloco ancorado em cada célula: ela + 7 vizinhas (+x, +y, +z)
+        pos = _achar(uk, ijk + d)
+        ok = pos >= 0
+        s8[ok] += soma[pos[ok]]
+        a8[ok] += area2[pos[ok]]
+    fino = np.linalg.norm(s8, axis=1) < LIMIAR_FINA * a8
+    diam = (a8 / 2) / (np.pi * 2 * celula)   # modelo de tubo no bloco: área ≈ π · diâmetro · 2·célula
+    fb = np.clip(2.0 ** np.ceil(np.log2(np.maximum(4 * celula / np.maximum(diam, 1e-12), 2))), 2, FATOR_MAX)
+    f = np.ones(len(uk), np.int64)
+    for d in _VIZ:   # cada célula fica com o maior fator dos blocos finos que a contêm
+        pos = _achar(uk, ijk - d)
+        ok = pos >= 0
+        ok[ok] = fino[pos[ok]]
+        f[ok] = np.maximum(f[ok], fb[pos[ok]].astype(np.int64))
+    return f
+
+
+def triangulos_estimados(area2, f, celula: float) -> float:
+    return _K_GRADE * float((area2 / 2 * f.astype(np.float64) ** 2).sum()) / celula ** 2
+
+
+def _chaves_adaptativas(v, o, celula: float, fk, ff):
+    """(b,3,3) -> chaves (b,3) int64: célula base (48 bits) << 15 | nível (3) | subcélula (3×4)."""
+    w = (v.reshape(-1, 3) - o) / celula
+    ijk = np.floor(w).astype(np.int64)
+    kb = _chave_base(ijk)
+    f = np.ones(len(kb), np.int64)
+    if len(fk):
+        pos = np.minimum(np.searchsorted(fk, kb), len(fk) - 1)
+        achou = fk[pos] == kb
+        f[achou] = ff[pos[achou]]
+    sub = np.minimum(np.floor((w - ijk) * f[:, None]).astype(np.int64), (f - 1)[:, None])
+    nivel = np.round(np.log2(f)).astype(np.int64)
+    return ((kb << 15) | (nivel << 12) | (sub[:, 0] << 8) | (sub[:, 1] << 4) | sub[:, 2]).reshape(-1, 3)
+
+
+def _quadricas(v, inv, m):
+    """Planos dos triângulos ponderados pela área, somados por agrupamento nos 3 cantos (6 termos de
+    A = Σ w·n·nᵀ e 3 de b = Σ w·(n·v0)·n) para o ponto de menor erro quadrático (QEM). -> (m, 9)."""
+    cr = np.cross(v[:, 1] - v[:, 0], v[:, 2] - v[:, 0]).astype(np.float64)
+    a2 = np.linalg.norm(cr, axis=1)
+    n = cr / np.maximum(a2, 1e-300)[:, None]
+    w = a2 / 2
+    dlt = (n * v[:, 0]).sum(axis=1)
+    n = np.ascontiguousarray(n.T)
+    q = (w * n[0] * n[0], w * n[0] * n[1], w * n[0] * n[2], w * n[1] * n[1], w * n[1] * n[2], w * n[2] * n[2],
+         w * dlt * n[0], w * dlt * n[1], w * dlt * n[2])
+    cantos = [np.ascontiguousarray(inv[c::3]) for c in range(3)]
+    return np.stack([sum(np.bincount(ic, x, m) for ic in cantos) for x in q], 1)
+
+
+def _pontos_qem(media, q, lado, fatia: int = 200_000):
+    """Ponto de menor erro aos planos de cada agrupamento (pseudo-inversa truncada: direções sem
+    informação, como o eixo de um canal, ficam na média), limitado a meia subcélula da média."""
+    if len(q) > fatia:
+        return np.concatenate([_pontos_qem(media[i:i + fatia], q[i:i + fatia], lado[i:i + fatia])
+                               for i in range(0, len(q), fatia)])
+    A = np.empty((len(q), 3, 3))
+    A[:, 0, 0], A[:, 0, 1], A[:, 0, 2], A[:, 1, 1], A[:, 1, 2], A[:, 2, 2] = q[:, :6].T
+    A[:, 1, 0], A[:, 2, 0], A[:, 2, 1] = A[:, 0, 1], A[:, 0, 2], A[:, 1, 2]
+    lam, U = np.linalg.eigh(A)
+    inv = np.where(lam > 1e-3 * lam[:, -1:], 1 / np.maximum(lam, 1e-300), 0)
+    r = q[:, 6:] - np.einsum("nij,nj->ni", A, media)
+    dx = np.einsum("nij,nj->ni", U, inv * np.einsum("nji,nj->ni", U, r))
+    lim = 0.5 * lado[:, None]
+    return media + np.clip(dx, -lim, lim)
+
+
+def compactar(caminho_bin: str, origem, celula: float, destino: str, finas=None):
+    """Agrupamento de vértices (célula = média dos vértices). Grava STL binário.
+    finas = (chaves base ordenadas, fatores) -> agrupamento adaptativo; None = grade única.
+    -> (nº triângulos, volume com sinal da malha reduzida)."""
+    origem32, celula32 = np.asarray(origem, dtype=np.float32), np.float32(celula)
+    origem64 = np.asarray(origem, dtype=np.float64)
+    chaves, somas, contagens, tris, quads = [], [], [], [], []
+    for _, v in _blocos(caminho_bin, BLOCO_TRIANGULOS if finas is None else BLOCO_ADAPTATIVO):
+        if finas is not None:
+            k = _chaves_adaptativas(v, origem64, celula, *finas)
+        else:
+            w = v - origem32
+            w /= celula32
+            np.floor(w, out=w)
+            ijk = w.astype(np.int32)   # (b,3,3)
+            del w
+            np.clip(ijk, 0, 2 ** 20 - 1, out=ijk)
+            k = ijk[..., 0].astype(np.int64) << 40   # (b,3) chave da célula
+            k |= ijk[..., 1].astype(np.int64) << 20
+            k |= ijk[..., 2]
+            del ijk
         uk, inv = np.unique(k.ravel(), return_inverse=True)
         vf = v.reshape(-1, 3)
         chaves.append(uk)
         somas.append(np.stack([np.bincount(inv, vf[:, d], len(uk)) for d in range(3)], 1))
         contagens.append(np.bincount(inv, minlength=len(uk)))
+        if finas is not None:
+            quads.append(_quadricas(v, inv, len(uk)))
         ok = (k[:, 0] != k[:, 1]) & (k[:, 1] != k[:, 2]) & (k[:, 0] != k[:, 2])   # não degenerados
         tris.append(k[ok])
         del k, inv, vf, ok, v
+        if finas is not None and len(chaves) >= _CONSOLIDAR:
+            chaves, somas, contagens, quads = _somar_por_chave(chaves, somas, contagens, quads)
+            tris = [_sem_repetidos(tris)]
+            devolver_memoria()
     if not tris:
         raise ValueError("STL sem triângulos válidos.")
     uk, inv = np.unique(np.concatenate(chaves), return_inverse=True)
     s, c = np.concatenate(somas), np.concatenate(contagens)
     verts = np.stack([np.bincount(inv, s[:, d], len(uk)) for d in range(3)], 1) / np.bincount(inv, c, len(uk))[:, None]
+    if quads:   # adaptativo: ponto QEM (lado da subcélula pelo nível gravado na chave)
+        qq = np.concatenate(quads)
+        quads = True
+        qq = np.stack([np.bincount(inv, qq[:, j], len(uk)) for j in range(9)], 1)
+        verts = _pontos_qem(verts, qq, celula / (2.0 ** ((uk >> 12) & 7)))
+        del qq
+    else:
+        quads = None
     t = np.concatenate(tris)
-    _, primeiro = np.unique(np.sort(t, axis=1), axis=0, return_index=True)   # duplicados (qualquer orientação)
-    faces = np.searchsorted(uk, t[np.sort(primeiro)])
-    del chaves, somas, contagens, tris, s, c, t, primeiro, inv
-    _gravar_stl(destino, verts[faces])
-    n = len(faces)
-    del verts, faces, uk
-    gc.collect()
-    return n
+    if quads is not None and len(uk) < 2 ** 21:   # adaptativo: 3 índices de 21 bits numa chave (menos memória)
+        del tris
+        t = np.searchsorted(uk, t)
+        o = np.sort(t, axis=1)
+        _, primeiro = np.unique((o[:, 0] << 42) | (o[:, 1] << 21) | o[:, 2], return_index=True)
+        del o
+        faces = t[np.sort(primeiro)]
+        verts = verts.astype(np.float32)   # o STL grava float32; o volume é o da malha gravada
+    else:
+        _, primeiro = np.unique(np.sort(t, axis=1), axis=0, return_index=True)   # duplicados (qualquer orientação)
+        faces = np.searchsorted(uk, t[np.sort(primeiro)])
+        del tris
+    del chaves, somas, contagens, s, c, t, primeiro, inv
+    tri = verts[faces]
+    _gravar_stl(destino, tri)
+    n, vol = len(faces), _volume(tri)
+    del verts, faces, uk, tri
+    devolver_memoria() if finas is not None else gc.collect()
+    return n, vol
 
 
 def _gravar_stl(destino: str, tri: np.ndarray) -> None:
@@ -556,10 +789,14 @@ def receber_e_compactar(envios, pasta: str = PASTA_CACHE, alvo: int = ALVO_TRIAN
     return compactar_recebidos(receber(envios, pasta), pasta, alvo, progresso)
 
 
-def compactar_recebidos(recebidos, pasta: str = PASTA_CACHE, alvo: int = ALVO_TRIANGULOS, progresso=None):
+def compactar_recebidos(recebidos, pasta: str = PASTA_CACHE, alvo: int = ALVO_TRIANGULOS, progresso=None,
+                        adaptativo: bool = GRANDE):
     """Mede e compacta, UM ARQUIVO POR VEZ e com grade comum, os arquivos já gravados por
     `receber`. Devolve uma lista de dicts: nome, caminho (STL compactado), bytes_antes,
-    bytes_depois, tri_antes, tri_depois, cache."""
+    bytes_depois, tri_antes, tri_depois, cache, volume_original, volume_reduzida.
+    adaptativo (envio grande): o envio INTEIRO fica em até `alvo` triângulos, com agrupamento
+    adaptativo (canais finos preservados). Ao lado de cada saída fica <nome>.original.json
+    (triângulos e volume da malha original), lido pelo app na tabela de métricas."""
     p = progresso or (lambda frac, texto: None)
     os.makedirs(os.path.join(pasta, "info"), exist_ok=True)
     if not recebidos:
@@ -585,39 +822,83 @@ def compactar_recebidos(recebidos, pasta: str = PASTA_CACHE, alvo: int = ALVO_TR
             binarios.append(cam_bin)
         infos.append(info)
 
-    reduzir = [info["n"] > alvo for info in infos]   # até o alvo, a malha passa intacta
+    def binario(i):   # medida em cache, mas compactação nova (outra grade): lê o original
+        if binarios[i] is None:
+            cam = recebidos[i][1]
+            binarios[i] = cam
+            if tipo_stl(cam) == "ascii":
+                binarios[i] = cam[:-4] + "_bin.stl"
+                ascii_para_binario(cam, binarios[i])
+        return binarios[i]
+
+    if adaptativo:   # o alvo vale para a SOMA: memória limitada com qualquer nº de arquivos
+        reduzir = [sum(info["n"] for info in infos) > alvo] * len(infos)
+    else:
+        reduzir = [info["n"] > alvo for info in infos]   # até o alvo, a malha passa intacta
     grandes = [info for info, r in zip(infos, reduzir) if r]
-    origem, celula = grade_comum(grandes, alvo) if grandes else (np.zeros(3), 0.0)
+    origem, celula = (grade_comum(grandes, int(0.7 * alvo) if adaptativo else alvo, total=adaptativo)
+                      if grandes else (np.zeros(3), 0.0))   # adaptativo: 30% do alvo para o refino
+    if adaptativo and grandes:   # chave adaptativa: no máximo 65.536 células por eixo
+        ext = float(np.max(np.max([info["max"] for info in grandes], axis=0) - origem))
+        celula = max(celula, ext / (2 ** _BITS_BASE - 2))
     resultados = []
-    for _tentativa in range(3):   # se alguma estrutura passar de 30 MB, engrossa a grade e refaz
-        tag = hashlib.md5(json.dumps([np.round(origem, 6).tolist(), round(celula, 9)]).encode()).hexdigest()[:10]
+    for _tentativa in range(4):   # passou do limite: engrossa a grade e refaz
+        tag = hashlib.md5(json.dumps([np.round(origem, 6).tolist(), round(celula, 9)]
+                                     + (["adaptativo", alvo] if adaptativo else [])).encode()).hexdigest()[:10]
+        saidas = [os.path.join(pasta, f"{sha}_{tag if reduzir[i] else 'original'}", os.path.splitext(nome)[0] + ".stl")
+                  for i, (nome, _cam, sha, _tam) in enumerate(recebidos)]
+        finas = [None] * len(recebidos)
+        if adaptativo and any(r and not os.path.isfile(s_) for r, s_ in zip(reduzir, saidas)):
+            est = {}
+            for i, (nome, *_r) in enumerate(recebidos):
+                if reduzir[i]:
+                    p(0.35 + 0.15 * i / len(recebidos), f"Analisando {nome}…")
+                    uk, soma, area2 = estatistica(binario(i), origem, celula)
+                    est[i] = (uk, area2, fatores(uk, soma, area2, celula))
+                    del soma
+                    gc.collect()
+            # orçamento: se o refino estimado passar do alvo, reduz a subdivisão de todas as células
+            while (sum(triangulos_estimados(a, f, celula) for _uk, a, f in est.values()) > alvo
+                   and any(f.max() > 1 for _uk, _a, f in est.values())):
+                est = {i: (uk, a, np.maximum(f // 2, 1)) for i, (uk, a, f) in est.items()}
+            finas = [(est[i][0][est[i][2] > 1], est[i][2][est[i][2] > 1]) if i in est else None
+                     for i in range(len(recebidos))]
+            del est
         resultados = []
         for i, ((nome, cam, sha, tam), info) in enumerate(zip(recebidos, infos)):
-            p(0.35 + 0.6 * i / len(recebidos), f"{'Reduzindo' if reduzir[i] else 'Preparando'} {nome}…")
-            pasta_saida = os.path.join(pasta, f"{sha}_{tag if reduzir[i] else 'original'}")
-            saida = os.path.join(pasta_saida, os.path.splitext(nome)[0] + ".stl")
+            p(0.5 + 0.45 * i / len(recebidos), f"{'Reduzindo' if reduzir[i] else 'Preparando'} {nome}…")
+            saida = saidas[i]
+            lado = os.path.splitext(saida)[0] + ".original.json"
             em_cache = os.path.isfile(saida)
             if em_cache:
                 n_out = (os.path.getsize(saida) - 84) // 50
+                vol_red = None
+                if os.path.isfile(lado):
+                    with open(lado) as f:
+                        vol_red = json.load(f).get("volume_reduzida")
+                os.utime(saida)   # em uso: a limpeza de 24 h conta a partir do último uso
             else:
-                cam_bin = binarios[i]
-                if cam_bin is None:   # medida em cache, mas compactação nova (outra grade)
-                    cam_bin = cam
-                    if tipo_stl(cam) == "ascii":
-                        cam_bin = cam[:-4] + "_bin.stl"
-                        ascii_para_binario(cam, cam_bin)
-                    binarios[i] = cam_bin
-                os.makedirs(pasta_saida, exist_ok=True)
+                os.makedirs(os.path.dirname(saida), exist_ok=True)
                 if reduzir[i]:
-                    n_out = compactar(cam_bin, origem, celula, saida + ".part")
+                    n_out, vol_red = compactar(binario(i), origem, celula, saida + ".part", finas[i])
+                    vol_red = abs(vol_red)
                     os.replace(saida + ".part", saida)
                 else:   # mesma malha, só em binário: origem espacial intacta
-                    os.replace(cam_bin, saida)
-                    n_out = info["n"]
+                    os.replace(binario(i), saida)
+                    n_out, vol_red = info["n"], info.get("volume")
+                with open(lado, "w") as f:
+                    json.dump({"tri": info["n"], "volume": info.get("volume"), "volume_reduzida": vol_red}, f)
             resultados.append({"nome": os.path.splitext(nome)[0], "caminho": saida, "bytes_antes": tam,
                                "bytes_depois": os.path.getsize(saida), "tri_antes": info["n"],
                                "tri_depois": int(n_out), "cache": em_cache, "celula": celula,
-                               "reduzida": reduzir[i]})
+                               "reduzida": reduzir[i], "volume_original": info.get("volume"),
+                               "volume_reduzida": vol_red})
+        if adaptativo:
+            total = sum(r["tri_depois"] for r, red in zip(resultados, reduzir) if red)
+            if total <= alvo:
+                break
+            celula *= float(np.sqrt(total / (0.9 * alvo)))
+            continue
         maior = max(r["bytes_depois"] for r, red in zip(resultados, reduzir) if red) if grandes else 0
         if maior <= LIMITE_SAIDA_BYTES:
             break
@@ -630,6 +911,17 @@ def compactar_recebidos(recebidos, pasta: str = PASTA_CACHE, alvo: int = ALVO_TR
     p(1.0, "Pronto")
     return resultados
 
+
+if __name__ == "__main__" and sys.argv[1:] == ["--processar"]:   # processo à parte (processar_recebidos)
+    def _evento(*m):
+        print(json.dumps(m), flush=True)
+    try:
+        _e = json.loads(sys.stdin.read())
+        _evento("ok", compactar_recebidos([tuple(r) for r in _e["recebidos"]], _e["pasta"],
+                                          progresso=lambda f, t: _evento("p", f, t)))
+    except Exception as _x:
+        _evento("erro", type(_x).__name__, str(_x))
+    sys.exit(0)
 
 if __name__ == "__main__":
     # Autoverificação mínima: cubo ASCII -> binário -> compactar mantém 12 triângulos e a caixa.
@@ -740,3 +1032,19 @@ if __name__ == "__main__":
     except ValueError:
         assert not parts()
     print("envio em partes OK")
+    # Envio grande (adaptativo): canais de 2, 4 e 8 un. numa grade de ~7 un. continuam inteiros
+    # (no agrupamento comum eles somem); o total respeita o alvo; o volume quase não muda.
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "tools"))
+    import gerar_stl_teste as _g
+    _g.sintetico(os.path.join(d, "sint.stl"), 400_000)
+    r, = compactar_recebidos([("sint.stl", os.path.join(d, "sint.stl"), "sint", 0)], pasta=d, alvo=300_000,
+                             adaptativo=True)
+    v = np.fromfile(r["caminho"], dtype=_DT, offset=84)["v"].astype(np.float64)
+    cen = v.mean(axis=1)
+    for x, y, diam in _g.CANAIS:
+        sel = np.hypot(cen[:, 0] - x, cen[:, 1] - y) < diam / 2 + 3 * r["celula"]
+        razao = abs(_volume(v[sel])) / (math.pi * (diam / 2) ** 2 * (_g.Z1 - _g.Z0))
+        assert razao > 0.8, (diam, razao, r["celula"])
+    assert r["tri_depois"] <= 300_000 and abs(r["volume_reduzida"] / r["volume_original"] - 1) < 0.01, r
+    print(f"adaptativo OK: {r['tri_antes']} -> {r['tri_depois']} triângulos, célula {r['celula']:.1f} un., "
+          "canais de 2, 4 e 8 un. preservados")
