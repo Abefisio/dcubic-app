@@ -55,6 +55,14 @@ Relatórios: `~/Desktop/RELATORIOS-CLAUDE/envio-rapido-publicacao.txt` e `~/Desk
 
 A parte mais lenta ficou a ~56 s do corte de 60 s do Traefik. Relatório: `~/Desktop/RELATORIOS-CLAUDE/envio-16mib-publicacao.txt`. O backup do arquivo de usuários deste teste é `/docker/dcubic/segredos/users.yaml.bak-20261029-212351`.
 
+### Merge na main (29/10/2026, 18:27)
+
+`feat/envio-rapido` foi levada para a main por fast-forward (`0c783d3..ff3298b`, sem merge commit). A VPS voltou a seguir a main (`/docker/dcubic/app` em `main`, ff3298b). Entre eaa94f4 e ff3298b só mudou documentação, então não houve rebuild: o contêiner continua com a imagem construída de eaa94f4. No Streamlit Cloud (sem `DCUBIC_ENVIO_GRANDE`) as rotas HTTP não são registradas e o componente não entra no modo HTTP (`app.py` só passa `modo="http"` dentro de `if _ENVIO_GRANDE`).
+
+Os pontos de reversão continuam válidos:
+- `rollback-pre-envio-rapido` → 0c783d3, imagem `dcubic:rollback-pre-envio-rapido` (antes das 4 partes em paralelo);
+- `rollback-pre-16mib` → e1fec9f, imagem `dcubic:rollback-pre-16mib` (4 em paralelo, partes de 32 MiB).
+
 O usuário temporário do teste foi removido. Antes, o arquivo de usuários foi copiado para `/docker/dcubic/segredos/users.yaml.bak-20261029-204328` (backup mantido na VPS); depois do teste, `/docker/dcubic/segredos/users.yaml` foi restaurado e conferido por sha256 contra esse backup.
 
 ## Como reverter
