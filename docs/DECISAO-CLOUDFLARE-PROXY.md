@@ -41,6 +41,20 @@ Decisão: o teto da parte no navegador (`assets/envio_grande/index.html`, `PARTE
 
 Relatórios: `~/Desktop/RELATORIOS-CLAUDE/envio-rapido-publicacao.txt` e `~/Desktop/RELATORIOS-CLAUDE/envio-16mib.txt`.
 
+### Resultado com partes de 16 MiB (publicado em 29/10/2026, 18:23)
+
+`feat/envio-rapido` (eaa94f4) foi publicada na VPS sem merge na main. O ponto de reversão é a tag `rollback-pre-16mib` (e1fec9f), com a imagem `dcubic:rollback-pre-16mib`. Envio real de 300 MiB pela Cloudflare, com login e 4 partes em paralelo:
+
+| | 32 MiB (e1fec9f) | 16 MiB (eaa94f4) |
+|---|---|---|
+| Tempo total | 61,8 s | **20,4 s** |
+| Velocidade | 5,13 MB/s | **16,12 MB/s** |
+| Partes / status | 13, todas 200 | 22, todas 200, sem reenvio |
+| Parte mais lenta | 54,07 s | **4,44 s** (16 MiB) |
+| SHA-256 local × VPS | iguais | iguais |
+
+A parte mais lenta ficou a ~56 s do corte de 60 s do Traefik. Relatório: `~/Desktop/RELATORIOS-CLAUDE/envio-16mib-publicacao.txt`. O backup do arquivo de usuários deste teste é `/docker/dcubic/segredos/users.yaml.bak-20261029-212351`.
+
 O usuário temporário do teste foi removido. Antes, o arquivo de usuários foi copiado para `/docker/dcubic/segredos/users.yaml.bak-20261029-204328` (backup mantido na VPS); depois do teste, `/docker/dcubic/segredos/users.yaml` foi restaurado e conferido por sha256 contra esse backup.
 
 ## Como reverter
