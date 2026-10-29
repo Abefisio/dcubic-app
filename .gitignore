@@ -38,3 +38,6 @@ exports/
 .pytest_cache/
 .coverage
 htmlcov/
+
+# Envio grande (DCUBIC_UPLOAD_DIR padrão): partes, arquivos recebidos e cache das malhas
+uploads/

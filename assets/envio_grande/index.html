@@ -7,7 +7,10 @@
      File.slice e manda UMA por vez; só manda a seguinte quando o Python devolve o "ack" (próximo byte
      esperado) nos args. Vários arquivos vão um após o outro; ack = tamanho total libera o próximo.
      Fluxo: escolher/arrastar -> lista dos arquivos + botão "Importar" -> só então começa o envio, com o
-     aviso "Loading…" piscando (e o texto de progresso) até o servidor terminar. -->
+     aviso "Loading…" piscando (e o texto de progresso) até o servidor terminar.
+     Modo HTTP (args.modo = "http", DCUBIC_ENVIO_GRANDE=1 na VPS): até 3 GB por arquivo, partes de até
+     32 MiB direto para o disco do servidor (modules/envio_http.py), com retomada, % e tempo estimado,
+     SHA-256 por bloco e Cancelar que apaga o parcial. Sem esse argumento: o envio pelo websocket acima. -->
 <style>
   body { margin: 0; font: 14px sans-serif; color: var(--texto, #e6edf6); background: transparent; }
   #zona { display: block; box-sizing: border-box; padding: 18px 12px; border-radius: 8px; cursor: pointer;
@@ -148,6 +151,182 @@ async function mandar(ini) {
   e.t = setTimeout(() => envio === e && e.ini === ini && mandar(ini), 60000);
 }
 
+// ── Modo HTTP (DCUBIC_ENVIO_GRANDE=1, VPS): até 3 GB por arquivo, direto para o disco do servidor ──
+// Partes de até 32 MiB (alinhadas a 1 MiB) por PUT em /dcubic-envio (modules/envio_http.py), com o
+// SHA-256 de cada bloco de 1 MiB. Queda de conexão: espera, pergunta ao servidor quais blocos já
+// chegaram e manda só os que faltam (escolher o mesmo arquivo de novo também retoma). O tamanho da
+// parte acompanha a velocidade (~20 s por pedido: o proxy da VPS corta pedidos com mais de 60 s).
+const BLOCO = MB, PARTE_MAX = 32 * MB, GB = 1024 * MB;
+let http = null;   // {token, limite} vindos do app
+let ctl = null;    // envio HTTP em andamento: {ids (prontos), id (atual), cancelado, xhr}
+const gb = (b) => (b / GB).toFixed(2).replace(".", ",");
+const esperar = (ms) => new Promise((r) => setTimeout(r, ms));
+const hex = (buf) => Array.from(new Uint8Array(buf), (b) => b.toString(16).padStart(2, "0")).join("");
+const SESSAO = "Sua sessão expirou. Recarregue a página, entre de novo e escolha o mesmo arquivo: " +
+  "o envio continua de onde parou.";
+
+function req(metodo, caminho, corpo, cab, aoEnviar) {
+  return new Promise((ok, falha) => {
+    const x = new XMLHttpRequest(), erro = (status, msg) => Object.assign(new Error(msg), {status});
+    x.open(metodo, "/dcubic-envio/" + caminho);
+    x.setRequestHeader("X-DCubic-Token", http.token);
+    for (const k in cab || {}) x.setRequestHeader(k, cab[k]);
+    x.timeout = 180000;
+    if (aoEnviar) x.upload.onprogress = (ev) => aoEnviar(ev.loaded / Math.max(ev.total, 1));
+    x.onload = () => {
+      let j = {};
+      try { j = JSON.parse(x.responseText || "{}"); } catch (e) { /* resposta do proxy, sem JSON */ }
+      if (x.status >= 200 && x.status < 300) ok(j);
+      else falha(erro(x.status, j.erro || (x.status === 403 ? SESSAO : `Erro ${x.status} no servidor.`)));
+    };
+    x.onerror = x.ontimeout = () => falha(erro(0, "Sem conexão com o servidor."));
+    x.onabort = () => falha(erro(-1, "cancelado"));
+    if (ctl) ctl.xhr = x;
+    x.send(corpo === undefined ? null : corpo);
+  });
+}
+// repetir não adianta: cancelado, 4xx (exceto 408/429) e disco cheio (507); o resto (rede, 5xx) tenta de novo
+const definitivo = (e) => e.status === -1 || e.status === 507 ||
+  (e.status >= 400 && e.status < 500 && e.status !== 408 && e.status !== 429);
+
+async function pausaRede(t) {
+  const s = Math.min(30, 2 ** Math.min(t, 5));
+  $("aviso").textContent = `Conexão interrompida — tentando de novo em ${s} s (o envio continua de onde parou).`;
+  await Promise.race([esperar(s * 1000), new Promise((r) => window.addEventListener("online", r, {once: true}))]);
+  if (!navigator.onLine) await new Promise((r) => window.addEventListener("online", r, {once: true}));
+  $("aviso").textContent = "Loading…";
+}
+async function comRetomada(fn) {   // pedidos pequenos (JSON): repete enquanto a conexão não volta
+  for (let t = 0; ; t++) {
+    try { return await fn(); }
+    catch (e) { if (definitivo(e) || t >= 40) throw e; await pausaRede(t); }
+  }
+}
+
+async function lerFaixa(arq, a, z) {   // NotReadableError (iCloud/Drive não baixado): até 3 novas tentativas
+  for (let t = 0; ; t++) {
+    try { return await arq.slice(a, z).arrayBuffer(); }
+    catch (err) { if (err.name !== "NotReadableError" || t >= 3) throw err; await esperar(1000 * (t + 1)); }
+  }
+}
+async function prepararFaixa(arq, b, e, gz) {   // blocos [b, e): bytes, SHA-256 por bloco e (opcional) gzip
+  const buf = await lerFaixa(arq, b * BLOCO, Math.min(e * BLOCO, arq.size)), shas = [];
+  for (let i = 0; i < buf.byteLength; i += BLOCO)
+    shas.push(hex(await crypto.subtle.digest("SHA-256", new Uint8Array(buf, i, Math.min(BLOCO, buf.byteLength - i)))));
+  const corpo = gz ? await new Response(new Blob([buf]).stream().pipeThrough(new CompressionStream("gzip"))).arrayBuffer() : buf;
+  return {b, e, shas, corpo, bytes: buf.byteLength};
+}
+function faixa(tem, de, nb) {   // primeiro trecho que falta a partir de `de`, com até nb blocos seguidos
+  const b = tem.indexOf(0, de);
+  if (b < 0) return null;
+  let e = b + 1;
+  while (e < tem.length && e - b < nb && tem[e] === 0) e++;
+  return [b, e];
+}
+const tempo = (s) => s < 60 ? `~${Math.max(1, Math.ceil(s))} s` : s < 3600 ? `~${Math.floor(s / 60)} min ${Math.round(s % 60)} s`
+  : `~${Math.floor(s / 3600)} h ${Math.round((s % 3600) / 60)} min`;
+function mostrarHttp(arq, feito, vel, acao) {
+  const n = lote.arqs.length, tam = Math.max(arq.size, 1), total = lote.feitos + feito;
+  $("barra").value = feito / tam;
+  $("barra_total").value = total / Math.max(lote.total, 1);
+  $("rot_arq").textContent = `${n > 1 ? `Arquivo ${lote.i + 1} de ${n} — ` : ""}${acao || "Enviando"} ${arq.name}: ` +
+    `${mb(feito)} de ${mb(arq.size)} MB (${(100 * feito / tam).toFixed(0)}%)` +
+    (vel > 0 ? ` — ${mb(vel)} MB/s — faltam ${tempo((lote.total - total) / vel)}` : "");
+  $("rot_total").textContent = `Total: ${mb(total)} de ${mb(lote.total)} MB (${(100 * total / Math.max(lote.total, 1)).toFixed(0)}%)`;
+  $("rot_total").classList.toggle("oculto", n < 2);
+  $("barra_total").classList.toggle("oculto", n < 2);
+}
+
+async function enviarArquivoHttp(arq) {
+  const c = ctl, gz = GZ && !/\.zip$/i.test(arq.name);
+  mostrarHttp(arq, 0, 0, "Preparando");
+  const ini = await comRetomada(() => req("POST", "iniciar",
+    JSON.stringify({nome: arq.name, total: arq.size, chave: `${arq.name}|${arq.size}|${arq.lastModified}`}),
+    {"Content-Type": "application/json"}));
+  c.id = ini.id;
+  let tem = Uint8Array.from(ini.mapa, (ch) => ch === "1" ? 1 : 0);
+  const n = tem.length, shas = new Array(n).fill("");   // "" = ainda sem hash (every() pularia buracos)
+  const feitos = () => { let s = 0; for (let k = 0; k < n; k++) if (tem[k]) s += Math.min(BLOCO, arq.size - k * BLOCO); return s; };
+  let nb = 8, vel = 0, falhas = 0, prox = null;   // começa com 8 MiB por parte e ajusta pela velocidade
+  for (;;) {
+    if (c.cancelado) throw Object.assign(new Error("cancelado"), {status: -1});
+    let f = faixa(tem, 0, nb);
+    if (!f) {   // tudo no servidor: hash composto (relê do computador os blocos que já estavam lá na retomada)
+      for (let k = 0; k < n; k += 32) {
+        if (shas.slice(k, Math.min(k + 32, n)).every(Boolean)) continue;
+        mostrarHttp(arq, k * BLOCO, 0, "Conferindo");
+        (await prepararFaixa(arq, k, Math.min(k + 32, n), false)).shas.forEach((h, j) => { shas[k + j] = h; });
+      }
+      mostrarHttp(arq, arq.size, 0, "Conferindo no servidor (tamanho e SHA-256)");
+      const comp = hex(await crypto.subtle.digest("SHA-256", Uint8Array.from(shas.join("").match(/../g), (h) => parseInt(h, 16))));
+      const r = await comRetomada(() => req("POST", `${c.id}/concluir`, JSON.stringify({hash: comp}), {"Content-Type": "application/json"}));
+      if (r.ok) return c.id;
+      tem = Uint8Array.from(r.mapa, (ch) => ch === "1" ? 1 : 0);   // bloco que não conferiu no disco: reenvia
+      continue;
+    }
+    if (prox && prox.b === f[0]) f = [prox.b, prox.e];   // aproveita a faixa já lida enquanto a anterior viajava
+    const [b, e] = f, pronta = prox && prox.b === b ? prox.p : prepararFaixa(arq, b, e, gz);
+    const f2 = faixa(tem, e, nb);
+    prox = f2 ? {b: f2[0], e: f2[1], p: prepararFaixa(arq, f2[0], f2[1], gz)} : null;
+    if (prox) prox.p.catch(() => {});
+    const p = await pronta;
+    p.shas.forEach((h, j) => { shas[b + j] = h; });
+    const base = feitos(), ts = performance.now();
+    try {
+      await req("PUT", `${c.id}?ini=${b * BLOCO}`, p.corpo, {"X-DCubic-Sha": p.shas.join(","), ...(gz ? {"X-DCubic-Gz": "1"} : {})},
+                (fr) => mostrarHttp(arq, base + fr * p.bytes, vel));
+      tem.fill(1, b, e);
+      const v = p.bytes / Math.max((performance.now() - ts) / 1000, 0.05);
+      vel = vel ? 0.7 * vel + 0.3 * v : v;
+      nb = Math.max(1, Math.min(PARTE_MAX / BLOCO, Math.floor(vel * 20 / BLOCO)));
+      falhas = 0;
+      mostrarHttp(arq, feitos(), vel);
+    } catch (err) {
+      if (definitivo(err) || falhas >= 40) throw err;
+      prox = null;
+      nb = Math.max(1, nb >> 1);   // conexão lenta/instável: partes menores
+      await pausaRede(falhas++);
+      // pergunta o que chegou: blocos completos ficam marcados no servidor mesmo com a queda no meio da parte
+      tem = Uint8Array.from((await comRetomada(() => req("GET", c.id))).mapa, (ch) => ch === "1" ? 1 : 0);
+    }
+  }
+}
+
+async function enviarLoteHttp() {
+  const c = ctl = {ids: [], id: null, cancelado: false, xhr: null};
+  try {
+    for (lote.i = 0; lote.i < lote.arqs.length; lote.i++) {
+      c.ids.push(await enviarArquivoHttp(lote.arqs[lote.i]));
+      c.id = null;
+      lote.feitos += lote.arqs[lote.i].size;
+    }
+    $("aviso").textContent = "Loading… preparando o arquivo no servidor";
+    falar("streamlit:setComponentValue", {value: {prontos: c.ids, n: Date.now()}, dataType: "json"});
+  } catch (err) {
+    if (ctl !== c || err.status === -1) return;   // cancelado
+    // volta à escolha: o que já chegou fica no servidor por 24 h e o mesmo arquivo retoma de onde parou
+    ctl = lote = null;
+    mostrar("zona");
+    texto("Envio interrompido. " + (err.name === "NotReadableError" ? FALHA_LEITURA
+      : !crypto.subtle ? "O envio grande exige o endereço seguro (https://) do app."
+      : err.message + (c.id ? " O que já foi enviado fica guardado por 24 h: escolha o mesmo arquivo de novo " +
+        "para continuar de onde parou." : "")));
+  }
+}
+
+function cancelarHttp() {   // interrompe e apaga, no servidor, o parcial e os arquivos já prontos deste lote
+  const c = ctl;
+  ctl = null;
+  c.cancelado = true;
+  if (c.xhr) c.xhr.abort();
+  for (const id of [...c.ids, c.id].filter(Boolean)) {
+    const x = new XMLHttpRequest();
+    x.open("DELETE", "/dcubic-envio/" + id);
+    x.setRequestHeader("X-DCubic-Token", http.token);
+    x.send();
+  }
+}
+
 function proximo() {
   if (envio) { clearTimeout(envio.t); lote.feitos += envio.arq.size; }
   const arq = lote.arqs[++lote.i];
@@ -161,8 +340,12 @@ function escolher(lista) {
   if (!arqs.length || lote) return;
   const ruim = arqs.find((a) => !/\.(stl|zip)$/i.test(a.name));
   if (ruim) return texto(`"${ruim.name}" não é .stl nem .zip. Escolha arquivos .stl ou .zip.`);
-  const grande = limiteMb && arqs.find((a) => a.size > limiteMb * MB);
-  if (grande) return texto(`"${grande.name}" tem ${mb(grande.size)} MB e passa do limite de ${limiteMb} MB por arquivo.`);
+  const lim = http ? http.limite : limiteMb * MB;
+  const grande = lim && arqs.find((a) => a.size > lim);
+  if (grande) return texto(http
+    ? `"${grande.name}" tem ${gb(grande.size)} GB e passa do limite de ${Math.round(lim / GB)} GB por arquivo ` +
+      `(${lim.toLocaleString("pt-BR")} bytes).`
+    : `"${grande.name}" tem ${mb(grande.size)} MB e passa do limite de ${limiteMb} MB por arquivo.`);
   pend = arqs;
   $("itens").replaceChildren(...arqs.map((a) => Object.assign(document.createElement("li"), {textContent: `${a.name} — ${mb(a.size)} MB`})));
   $("soma").textContent = `${arqs.length} arquivo(s), ${mb(arqs.reduce((s, a) => s + a.size, 0))} MB no total. Nada foi enviado ainda.`;
@@ -178,7 +361,8 @@ $("importar").addEventListener("click", () => {
   $("aviso").classList.add("loading");
   texto("");
   mostrar("andamento");
-  proximo();
+  if (http) enviarLoteHttp();
+  else proximo();
 });
 $("limpar").addEventListener("click", () => { pend = null; texto(""); mostrar("zona"); });
 
@@ -198,9 +382,12 @@ document.addEventListener("drop", (ev) => {
 });
 
 $("cancelar").addEventListener("click", () => {
-  if (!envio) return;
-  clearTimeout(envio.t);
-  falar("streamlit:setComponentValue", {value: {cancelar: envio.id}, dataType: "json"});
+  if (http && ctl) cancelarHttp();
+  else if (!envio) return;
+  else {
+    clearTimeout(envio.t);
+    falar("streamlit:setComponentValue", {value: {cancelar: envio.id}, dataType: "json"});
+  }
   envio = lote = null;
   mostrar("zona");
   texto("Envio cancelado.");
@@ -214,6 +401,7 @@ window.addEventListener("message", (ev) => {
     document.body.style.setProperty("--destaque", tema.primaryColor);
   }
   limiteMb = a.limite_mb || 0;
+  http = a.modo === "http" ? {token: a.token, limite: a.limite_bytes || 0} : null;
   // ack = próximo byte que o Python espera; igual à fatia em voo = ainda não processada (espera)
   if (envio && a.id === envio.id && a.ack !== envio.ini) {
     if (a.ack < envio.arq.size) mandar(a.ack);
