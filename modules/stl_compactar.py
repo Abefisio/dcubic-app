@@ -265,6 +265,12 @@ class _GravadorLimitado:
             self.p(0.9 * mb / (mb + 300), f"Baixando… {mb:.0f} MB")
         return self.f.write(b)
 
+    def flush(self):
+        self.f.flush()
+
+    def __getattr__(self, nome):   # repassa ao arquivo real qualquer outro atributo que o gdown pedir
+        return getattr(self.f, nome)
+
 
 def id_do_drive(link: str) -> str:
     """ID do arquivo em links /file/d/ID/... ou ...?id=ID (aceita também o ID puro)."""
@@ -303,6 +309,7 @@ def baixar_do_drive(link: str, limite_mb: int = LIMITE_DRIVE_MB, pasta: str = PA
             raise ValueError("Não foi possível baixar do Google Drive: o arquivo não está público ou o "
                              "Drive bloqueou temporariamente o download (excesso de acessos). No Google "
                              "Drive: Compartilhar > Acesso geral: Qualquer pessoa com o link.") from None
+        import traceback; traceback.print_exc()
         raise ValueError(f"Falha ao baixar do Google Drive ({type(e).__name__}). "
                          "Verifique a conexão e tente novamente.") from None
     return receber_baixado(bruto, pasta, progresso=p)
