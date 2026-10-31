@@ -269,7 +269,10 @@ class _GravadorLimitado:
         self.f.flush()
 
     def __getattr__(self, nome):   # repassa ao arquivo real qualquer outro atributo que o gdown pedir
-        return getattr(self.f, nome)
+        f = self.__dict__.get("f")
+        if f is None:
+            raise AttributeError(nome)
+        return getattr(f, nome)
 
 
 def id_do_drive(link: str) -> str:
