@@ -1,5 +1,5 @@
 """
-DCubic — envio de STL de até 3 GB direto para o disco (modo grande: DCUBIC_ENVIO_GRANDE=1, VPS).
+Endo Atlas 3D — envio de STL de até 3 GB direto para o disco (modo grande: DCUBIC_ENVIO_GRANDE=1, VPS).
 
 Por que assim: o Streamlit não tem rota HTTP própria e o envio pelo componente (websocket) passa
 pela memória do processo. Aqui um handler Tornado é registrado NO MESMO servidor do Streamlit

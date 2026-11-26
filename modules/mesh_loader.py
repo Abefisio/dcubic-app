@@ -1,5 +1,5 @@
 """
-DCubic — carregador de malhas STL via pyvista.
+Endo Atlas 3D — carregador de malhas STL via pyvista.
 Usado para arquivos exportados pelo Bruker microCT CTAnalyser.
 """
 from __future__ import annotations

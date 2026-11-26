@@ -1,5 +1,5 @@
 """
-DCubic — cortes (slices) ortogonais de malhas STL, no estilo dos visualizadores de micro-CT.
+Endo Atlas 3D — cortes (slices) ortogonais de malhas STL, no estilo dos visualizadores de micro-CT.
 
 Convenção de eixos IDÊNTICA à de modules/viewer3d.create_plotly_3d (para o corte bater
 com o modelo mostrado no 3D): as colunas de mesh.points são (c0, c1, c2) e o Plotly usa

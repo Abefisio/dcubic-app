@@ -1,5 +1,5 @@
 """
-DCubic Image System Platform — segmentação por threshold multi-tecido.
+Endo Atlas 3D — segmentação por threshold multi-tecido.
 
 Princípio 1 (inviolável): segment_volume opera exclusivamente sobre os
 voxels brutos do volume. Os masks retornados são a base para métricas

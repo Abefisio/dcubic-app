@@ -1,5 +1,5 @@
 """
-DCubic Image System Platform — módulo de anatomia (Requisito 6).
+Endo Atlas 3D — módulo de anatomia (Requisito 6).
 
 Calcula volumes anatômicos por MORFOLOGIA 3D sobre os voxels brutos (Princípio 1):
   - externo_mm3           : envelope total do dente (sólido preenchido)

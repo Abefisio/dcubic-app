@@ -1,5 +1,5 @@
 """
-DCubic Image System Platform — carregador universal de volumes.
+Endo Atlas 3D — carregador universal de volumes.
 
 Princípio fundamental: este módulo NUNCA altera os dados brutos.
 A matriz numpy retornada em 'volume' é sempre float32 com valores preservados

@@ -1,5 +1,5 @@
 """
-DCubic Image System Platform — referências de anatomia dental (Requisito 7).
+Endo Atlas 3D — referências de anatomia dental (Requisito 7).
 
 Base CURADA (notação FDI) de nº de raízes e canais típicos por dente, para
 contextualizar a análise 3D (ex.: comparar o canal medido com o esperado).

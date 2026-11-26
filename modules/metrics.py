@@ -1,5 +1,5 @@
 """
-DCubic Image System Platform — métricas quantitativas (Princípio 1).
+Endo Atlas 3D — métricas quantitativas (Princípio 1).
 
 Todos os cálculos operam sobre masks de voxels brutos ou malhas geradas
 a partir deles. Nunca sobre imagens renderizadas nem sobre overlays visuais.

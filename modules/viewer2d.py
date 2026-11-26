@@ -1,5 +1,5 @@
 """
-DCubic Image System Platform — visualização 2D triplanar.
+Endo Atlas 3D — visualização 2D triplanar.
 
 Os dados exibidos são sempre os voxels brutos do volume (Princípio 1).
 O crosshair mostra a interseção dos três planos de corte.

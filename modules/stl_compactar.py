@@ -1,5 +1,5 @@
 """
-DCubic — recebimento e compactação automática de STL enviados pelo usuário (Bloco 3).
+Endo Atlas 3D — recebimento e compactação automática de STL enviados pelo usuário (Bloco 3).
 
 Princípio: o aluno envia o STL bruto (ou um .zip com ele) e o app faz o resto, sem
 tratamento manual. Fluxo de `receber_e_compactar`:

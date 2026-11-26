@@ -1,5 +1,5 @@
 """
-DCubic Image System Platform — geração de relatório PDF (reportlab).
+Endo Atlas 3D — geração de relatório PDF (reportlab).
 
 Princípio 1: as métricas no relatório são as calculadas sobre voxels brutos,
 recebidas como parâmetro — este módulo apenas formata e serializa.
@@ -68,7 +68,7 @@ def generate_pdf(
 
     story = []
 
-    story.append(Paragraph("DCubic Image System Platform", title_s))
+    story.append(Paragraph("Endo Atlas 3D", title_s))
     story.append(Paragraph(
         "Análise quantitativa de volume 3D micro-CT · USP/FOUSP · Pesquisa acadêmica", sub_s
     ))

@@ -1,5 +1,5 @@
 """
-DCubic Image System Platform
+Endo Atlas 3D
 Análise de volumes 3D micro-CT — USP/FOUSP — Pesquisa acadêmica
 """
 
@@ -79,13 +79,13 @@ if _ENVIO_GRANDE:
 _MAX_VOXELS = 12_000_000  # ponytail: ajuste conforme RAM disponível (Streamlit Cloud ~1 GB)
 
 st.set_page_config(
-    page_title="DCubic Image System Platform",
+    page_title="Endo Atlas 3D",
     page_icon="🔬",
     layout="wide",
 )
 
 # ---------------------------------------------------------------------------
-# Identidade visual DCubic (tema + molar 3D)
+# Identidade visual Endo Atlas 3D (tema + molar 3D)
 # ---------------------------------------------------------------------------
 import base64 as _b64mod
 import streamlit.components.v1 as _components
@@ -209,14 +209,14 @@ st.markdown(
 # espera de ~0,7 s por tentativa da biblioteca). Limite por IP exigiria um proxy na frente do app.
 import time
 _MAX_TENTATIVAS, _PAUSA_S = 5, 60
-_AJUDA_LOGIN = "Esqueceu a senha ou não tem acesso? Fale com o administrador do DCubic."
+_AJUDA_LOGIN = "Esqueceu a senha ou não tem acesso? Fale com o administrador do Endo Atlas 3D."
 
 
 def _cabecalho_login():
     with _dc_login_top:
         _dc_login = _dc_read(os.path.join(_DC_ASSETS, "login.html")).replace("__SRC__", _dc_molar_sources())
         if _dc_login:
-            _components.html(_dc_login, height=180, scrolling=False)
+            _components.html(_dc_login, height=200, scrolling=False)
 
 
 _espera = int(st.session_state.get("_login_bloqueio_ate", 0) - time.time() + 0.999)
@@ -258,7 +258,7 @@ if _auth_status is not True:
     st.stop()
 
 # Login bem-sucedido — exibe o app abaixo
-st.sidebar.markdown("### DCubic Image System Platform")
+st.sidebar.markdown("### Endo Atlas 3D")
 authenticator.logout(location="sidebar")
 st.sidebar.caption(f"Logado como: {st.session_state.get('name', '')}")
 
@@ -1564,7 +1564,7 @@ with tab_met:
             st.download_button(
                 label=f"⬇ {name} STL",
                 data=mesh_to_stl_bytes(mesh_e),
-                file_name=f"dcubic_{name.replace('/', '_').replace(' ', '_')}.stl",
+                file_name=f"endo_atlas_3d_{name.replace('/', '_').replace(' ', '_')}.stl",
                 mime="application/octet-stream",
                 key=f"dl_stl_{name}",
             )
@@ -1572,7 +1572,7 @@ with tab_met:
             st.download_button(
                 label=f"⬇ {name} OBJ",
                 data=mesh_to_obj_bytes(mesh_e),
-                file_name=f"dcubic_{name.replace('/', '_').replace(' ', '_')}.obj",
+                file_name=f"endo_atlas_3d_{name.replace('/', '_').replace(' ', '_')}.obj",
                 mime="text/plain",
                 key=f"dl_obj_{name}",
             )
@@ -1602,7 +1602,7 @@ with tab_met:
         st.download_button(
             label="⬇ Baixar relatório PDF",
             data=pdf_bytes,
-            file_name="dcubic_relatorio.pdf",
+            file_name="endo_atlas_3d_relatorio.pdf",
             mime="application/pdf",
             key="dl_pdf",
         )

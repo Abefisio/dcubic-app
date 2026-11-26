@@ -1,5 +1,5 @@
 """
-DCubic Image System Platform — render 3D via marching cubes + Plotly Mesh3d.
+Endo Atlas 3D — render 3D via marching cubes + Plotly Mesh3d.
 
 PyVista é usado APENAS para geração de malha e exportação (STL/OBJ no Bloco 5).
 A visualização 3D interativa usa Plotly Mesh3d (WebGL client-side) — sem
