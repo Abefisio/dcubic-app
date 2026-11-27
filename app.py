@@ -93,7 +93,9 @@ import streamlit.components.v1 as _components
 st.markdown(
     "<style>@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@400;500&display=swap');"
     "html,body,[class*='css'],.stApp,button,input,textarea,select{font-family:'Inter',sans-serif !important;}"
-    "h1,h2,h3,h4{font-family:'Inter',sans-serif !important;letter-spacing:-.02em;}.stApp a{color:#00c2c9;}</style>",
+    "h1,h2,h3,h4{font-family:'Inter',sans-serif !important;letter-spacing:-.02em;}.stApp a{color:#00c2c9;}"
+    # Barra lateral: degradê azul-marinho (config.toml só aceita cor sólida)
+    "[data-testid='stSidebar'],[data-testid='stSidebar']>div:first-child{background:linear-gradient(180deg,#1a2a80 0%,#0b1240 100%) !important;}</style>",
     unsafe_allow_html=True,
 )
 
