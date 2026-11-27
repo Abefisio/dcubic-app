@@ -935,9 +935,15 @@ if _is_stl:
             for _col, _ne in zip(_cols, _slices.EIXOS):
                 _ax = _slices.EIXOS[_ne][0]
                 _lo, _hi = float(_bb[0][_ax]), float(_bb[1][_ax])
+                _kc = f"corte_{_ne}_{_sig}"
+                # Padrão (centro) só via session_state, sem value= no slider: a chave é
+                # reatribuída acima a cada execução, e value= + escrita na Session State
+                # gera o aviso amarelo do Streamlit.
+                if _kc not in st.session_state:
+                    st.session_state[_kc] = (_lo + _hi) / 2
                 with _col:
                     _pos = st.slider(f"{_ne} — posição ({_slices.UNIDADE})", _lo, _hi,
-                                     (_lo + _hi) / 2, step=_passo, key=f"corte_{_ne}_{_sig}")
+                                     step=_passo, key=_kc)
                     _pq = int(round(_pos / _slices.PASSO_MM))
                     _png, _inf = _corte_cached(_chave_arq, _vis_tm, _ne, _pq, _tm,
                                                {n: _tissue_colors_stl[n] for n in _tm}, _bb)
