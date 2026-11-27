@@ -18,3 +18,12 @@
   interação; depois, 0 avisos em: +1 passo (teclado) e salto ao mínimo (mouse) nos 3 eixos, alternância
   3D/Cortes com plano ligado e troca de dente.
 - **Deploy:** reconstruir a imagem na VPS (ver `docs/DEPLOY-VPS.md`). Aguarda aprovação do Dr. Abe.
+
+## Publicação em produção (27/11/2026, aprovada pelo Dr. Abe)
+
+- `fix/aviso-slider-cortes` juntado ao `main` (ba8c1a0); VPS: `docker compose up -d --build`, exit 0, contêiner healthy,
+  0 erros nos logs; `users.yaml` intacto (sha256 e3e67b1a...0f33c, 4 usuários).
+- Teste: roteiro AppTest dentro do contêiner de produção (MOLAR-SUP e 34-PRE, 3 eixos, alternância 3D/Cortes,
+  troca de dente) → 0 avisos de Session State, sem exceções. Conferência visual no navegador pendente (sessão exigiu login).
+- Reverter: `cd /docker/dcubic && docker tag dcubic:backup-antes-aviso-slider-20261127 dcubic:latest && docker compose up -d`
+  (tag git `backup-antes-aviso-slider-20261127`).
